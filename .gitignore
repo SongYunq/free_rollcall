@@ -1,0 +1,37 @@
+# Python environments and generated files
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build outputs and local snapshots
+/build/
+/dist/
+/backups/
+
+# Machine-specific editor and OS files
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Local secrets and browser authentication state
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+cookies.json
+storage_state.json
+playwright/.auth/
+*.log
