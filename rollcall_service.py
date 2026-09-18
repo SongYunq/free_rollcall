@@ -55,7 +55,7 @@ async def login_and_get_cookie(log=_ignore_log, *, browser_channels=()):
     传入本机浏览器渠道时依次尝试，最后回退 Chromium；全失败返回
     (None, None)（GUI 原行为）。本轮不保存或复用登录会话。
     log 可传入单参数回调，默认静默。"""
-    log("[INFO] 正在启动浏览器，连接厦大统一身份认证系统...")
+    log("[INFO] 加载统一身份认证登录页面")
     async with async_playwright() as p:
         if not browser_channels:
             browser = await p.chromium.launch(headless=False)
@@ -95,7 +95,7 @@ async def login_and_get_cookie(log=_ignore_log, *, browser_channels=()):
         await page.goto(BASE_URL)
 
         if "ids.xmu.edu.cn" in page.url:
-            log("[INFO] 请在浏览器中输入账号密码登录...")
+            log("[INFO] 请进行统一身份认证登录")
             await page.wait_for_function(
                 "() => !window.location.href.includes('ids.xmu.edu.cn')",
                 timeout=120000,
@@ -111,7 +111,7 @@ async def login_and_get_cookie(log=_ignore_log, *, browser_channels=()):
             pass
 
         if student_id is None:
-            log("[INFO] 正在拉取课程页面触发数据包拦截...")
+            log("[INFO] 正在通过课程签到页面获取学生 ID...")
             try:
                 cookies_tmp = await context.cookies()
                 cookie_str_tmp = "; ".join(

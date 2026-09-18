@@ -69,7 +69,8 @@ def make_label(parent, text, size=13, color=TEXT_PRI, bold=False, anchor="w", wr
     weight = "bold" if bold else "normal"
     return ctk.CTkLabel(
         parent, text=text, font=("Microsoft YaHei", size, weight),
-        text_color=color, anchor=anchor, wraplength=wraplength
+        text_color=color, anchor=anchor, wraplength=wraplength,
+        justify="center" if anchor == "center" else "left",
     )
 
 
@@ -97,7 +98,7 @@ class FreeRollcallApp(ctk.CTk):
         # ── 窗口基础设置 ─────────────────────────────
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
-        self.title("free_rollcall 签到助手")
+        self.title("free_rollcall - XMU")
         self.geometry("500x700")
         self.resizable(False, False)
         self.configure(fg_color=BG)
@@ -228,7 +229,7 @@ class FreeRollcallApp(ctk.CTk):
         ctk.CTkFrame(f, fg_color=BG, height=24).pack()
 
         self._home_status = make_label(
-            f, "", size=12, color=TEXT_SEC, anchor="center"
+            f, "", size=12, color=TEXT_SEC, anchor="center", wraplength=420
         )
         self._home_status.pack()
 
@@ -244,26 +245,26 @@ class FreeRollcallApp(ctk.CTk):
 
     def _start_login(self):
         self._busy = True
-        self._set_home_status("正在启动浏览器，请稍候...")
+        self._set_home_status("加载统一身份认证登录页面")
 
         def on_done(result, err):
             if err or result is None:
-                self._log(f"[ERROR] 登录异常: {err}")
+                self._log("[ERROR] 登录失败" + (f": {err}" if err else ""))
                 self._busy = False
-                self._set_home_status("登录失败，请点击重新尝试", DANGER)
+                self._set_home_status("登录失败，请重新尝试", DANGER)
                 return
 
             cookie, student_id = result
             if not cookie or not student_id:
-                self._log("[ERROR] 未能获取凭证或学生 ID")
+                self._log("[ERROR] 获取登录凭证或学生ID失败")
                 self._busy = False
-                self._set_home_status("未能提取学生 ID，请重新尝试", DANGER)
+                self._set_home_status("获取登录凭证或学生ID失败，请重新登录", DANGER)
                 return
 
             self._cookie     = cookie
             self._student_id = student_id
-            self._set_home_status("登录成功，正在拉取课程列表...", SUCCESS)
-            self._log("[SUCCESS] 凭证获取成功，开始拉取课程列表...")
+            self._set_home_status("登录成功，正在获取课程列表...", SUCCESS)
+            self._log("[SUCCESS] 登录凭证获取成功")
 
             def fetch_courses():
                 s_id, y_id = get_current_semester_info(cookie, self._log)
@@ -271,11 +272,16 @@ class FreeRollcallApp(ctk.CTk):
 
             def on_courses(courses, err2):
                 self._busy = False
-                if err2 or not courses:
-                    self._log(f"[ERROR] 课程拉取失败: {err2}")
-                    self._set_home_status("课程列表拉取失败，请重新尝试", DANGER)
+                if err2:
+                    self._log(f"[ERROR] 课程列表获取失败: {err2}")
+                    self._set_home_status("课程列表获取失败，请重新尝试", DANGER)
+                    return
+                if not courses:
+                    self._log("[WARN] 课程列表为空")
+                    self._set_home_status("未获取到课程，请稍后重试", WARN)
                     return
                 self._courses = courses
+                self._log(f"[SUCCESS] 已获取 {len(courses)} 门课程")
                 self.after(0, self._show_courses)
 
             run_sync_in_thread(fetch_courses, on_courses)
@@ -305,7 +311,7 @@ class FreeRollcallApp(ctk.CTk):
 
         make_label(hdr, "选择课程", size=24, bold=True).pack(anchor="w")
         make_label(
-            hdr, f"共 {len(self._courses)} 门课，点击查看最新签到码",
+            hdr, f"共 {len(self._courses)} 门课程，点击查询签到码",
             size=12, color=TEXT_SEC
         ).pack(anchor="w", pady=(2, 0))
 
@@ -323,28 +329,32 @@ class FreeRollcallApp(ctk.CTk):
 
         row = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=12)
         row.pack(fill="x", pady=5, padx=4)
+        row.grid_columnconfigure(1, weight=1)
 
         icon = ctk.CTkLabel(
             row, text="📚", font=("Segoe UI Emoji", 22),
             width=44, height=44, fg_color=SURFACE2, corner_radius=10
         )
-        icon.pack(side="left", padx=(10, 8), pady=10)
+        icon.grid(row=0, column=0, padx=(10, 8), pady=10, sticky="n")
 
         info = ctk.CTkFrame(row, fg_color="transparent")
-        info.pack(side="left", fill="x", expand=True, pady=10)
-        ctk.CTkLabel(
+        info.grid(row=0, column=1, sticky="ew", pady=10)
+        name_label = ctk.CTkLabel(
             info, text=name,
             font=("Microsoft YaHei", 13, "bold"),
-            text_color=TEXT_PRI, anchor="w"
-        ).pack(anchor="w")
-        ctk.CTkLabel(
-            info, text=f"ID: {cid}",
+            text_color=TEXT_PRI, anchor="w", justify="left",
+            width=1, wraplength=300,
+        )
+        name_label.pack(fill="x")
+        id_label = ctk.CTkLabel(
+            info, text=f"ID: {cid if cid is not None else '未知'}",
             font=("Courier New", 11),
             text_color=TEXT_SEC, anchor="w"
-        ).pack(anchor="w")
+        )
+        id_label.pack(fill="x")
 
-        arrow = ctk.CTkLabel(row, text="›", font=("Arial", 22), text_color=TEXT_SEC)
-        arrow.pack(side="right", padx=12)
+        arrow = ctk.CTkLabel(row, text="›", font=("Arial", 22), text_color=TEXT_SEC, width=16)
+        arrow.grid(row=0, column=2, padx=12)
 
         def on_click(e, _cid=cid, _name=name):
             self._show_code(_cid, _name)
@@ -354,7 +364,7 @@ class FreeRollcallApp(ctk.CTk):
         def on_leave(e):
             row.configure(fg_color=SURFACE)
 
-        for w in (row, icon, info, arrow):
+        for w in (row, icon, info, name_label, id_label, arrow):
             w.bind("<Button-1>", on_click)
             w.bind("<Enter>",    on_enter)
             w.bind("<Leave>",    on_leave)
@@ -388,6 +398,7 @@ class FreeRollcallApp(ctk.CTk):
         self._code_card_frame.pack(fill="both", expand=True, padx=20, pady=10)
 
         self._show_loading_card()
+        self._log(f"[INFO] 正在查询签到码: {course_name}")
 
         def fetch():
             r_id, r_time = get_latest_rollcall_id(
@@ -410,13 +421,19 @@ class FreeRollcallApp(ctk.CTk):
 
         def on_result(result, err):
             if err:
-                self._log(f"[ERROR] 查询出错: {err}")
-                self.after(0, self._show_result_card, None, course_id, course_name)
+                self._log(f"[ERROR] 签到查询失败: {err}")
+                self.after(0, self._show_result_card, None, course_id, course_name, True)
                 return
-            self._log(
-                f"[INFO] {course_name} | {result['time'] if result else '-'} "
-                f"| 签到码: {result['code'] if result else '无'}"
-            )
+            if result is None:
+                self._log(f"[WARN] 暂无签到记录: {course_name}")
+            else:
+                level = "SUCCESS" if result["code"] else "INFO"
+                self._log(
+                    f"[{level}] 签到查询完成\n"
+                    f"  课程名称: {course_name}\n"
+                    f"  发起时间: {result['time']}\n"
+                    f"  签到结果: {result['code'] or '无数字签到码'}"
+                )
             self.after(0, self._show_result_card, result, course_id, course_name)
 
         run_sync_in_thread(fetch, on_result)
@@ -441,7 +458,7 @@ class FreeRollcallApp(ctk.CTk):
             if isinstance(w, ctk.CTkProgressBar):
                 w.start()
 
-    def _show_result_card(self, result, course_id, course_name):
+    def _show_result_card(self, result, course_id, course_name, failed=False):
         for w in self._code_card_frame.winfo_children():
             w.destroy()
 
@@ -449,16 +466,21 @@ class FreeRollcallApp(ctk.CTk):
         card.pack(fill="both", expand=True)
 
         inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.place(relx=0.5, rely=0.5, anchor="center")
+        inner.place(relx=0.5, rely=0.5, relwidth=0.9, anchor="center")
 
-        if result is None:
+        if failed:
+            ctk.CTkLabel(inner, text="⚠", font=("Segoe UI Emoji", 52), text_color=DANGER).pack()
+            make_label(inner, "签到查询失败", size=18, color=DANGER, bold=True, anchor="center").pack(pady=(8, 2))
+            make_label(inner, "请稍后重试，详情可查看日志", size=13, color=TEXT_SEC, anchor="center", wraplength=340).pack()
+
+        elif result is None:
             ctk.CTkLabel(inner, text="📋", font=("Segoe UI Emoji", 52)).pack()
             make_label(inner, "暂无签到记录", size=18, bold=True, anchor="center").pack(pady=(8, 2))
-            make_label(inner, "该课程近期尚未发起签到活动", size=13, color=TEXT_SEC, anchor="center").pack()
+            make_label(inner, "未查询到该课程的签到记录", size=13, color=TEXT_SEC, anchor="center", wraplength=340).pack()
 
         elif result["code"]:
             status_map   = {"active": ("进行中", SUCCESS), "finished": ("已结束", TEXT_SEC)}
-            status_txt, status_clr = status_map.get(result["status"], (result["status"], TEXT_SEC))
+            status_txt, status_clr = status_map.get(result["status"], (result["status"] or "未知状态", TEXT_SEC))
 
             ctk.CTkLabel(inner, text="🎯", font=("Segoe UI Emoji", 46)).pack()
             make_label(inner, "数字签到码", size=13, color=TEXT_SEC, anchor="center").pack(pady=(4, 0))
@@ -490,8 +512,8 @@ class FreeRollcallApp(ctk.CTk):
             ctk.CTkLabel(inner, text="📍", font=("Segoe UI Emoji", 52)).pack()
             make_label(inner, "无数字签到码", size=18, bold=True, anchor="center").pack(pady=(8, 2))
             make_label(
-                inner, "本次签到可能为 GPS 定位或扫码等其他签到方式",
-                size=12, color=TEXT_SEC, anchor="center"
+                inner, "本次签到可能采用定位或扫码等其他方式",
+                size=12, color=TEXT_SEC, anchor="center", wraplength=300
             ).pack()
             make_label(
                 inner, f"发起时间：{result['time']}",
