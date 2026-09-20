@@ -25,6 +25,7 @@ Thumbs.db
 *.swo
 
 # Local secrets and browser authentication state
+/account.json
 .env
 .env.*
 !.env.example
