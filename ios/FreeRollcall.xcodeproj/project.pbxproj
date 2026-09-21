@@ -1,0 +1,521 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		057B82795D59DCF0B1EC7217 /* UITests/AppFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D830B0E4DD85D887B3B6438 /* UITests/AppFlowTests.swift */; };
+		0B12BA8F0AB17DEDECFC686C /* FreeRollcall/Views/AccountsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5423E324DD4D8DBE7F4BFDF /* FreeRollcall/Views/AccountsView.swift */; };
+		18208052E4D4E7172090B100 /* FreeRollcall/App/FreeRollcallApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9663F0D6F6176262F234052C /* FreeRollcall/App/FreeRollcallApp.swift */; };
+		3E5017F1B8770F1BCA8F41FE /* RollcallCore in Frameworks */ = {isa = PBXBuildFile; productRef = 848CC3D0AA88F2528596FAD0 /* RollcallCore */; };
+		5457C28BA17D8D150C4008A5 /* RollcallCore in Frameworks */ = {isa = PBXBuildFile; productRef = DAACAA008D245CF3C6924A2E /* RollcallCore */; };
+		842C1F525776C763EC5E7D14 /* FreeRollcall/Views/LogsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8B5A76C4AB1513B45879AF8 /* FreeRollcall/Views/LogsView.swift */; };
+		9BBE54935EA726D2049045E6 /* AppTests/AppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBE82DB207345F6C2F3680C6 /* AppTests/AppStateTests.swift */; };
+		B60941AA98443DD8F32468F9 /* FreeRollcall/App/AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = AADB3E5DA501D956CE98B3BD /* FreeRollcall/App/AppState.swift */; };
+		B663C2BE17B8B48B717F66E7 /* FreeRollcall/Services/WebAuthenticator.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABE4E6146D3D57297C5FAEE0 /* FreeRollcall/Services/WebAuthenticator.swift */; };
+		CA28033F97B33EAD263ABE04 /* FreeRollcall/Views/HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DC97747A97F18FB5ABC6BAC /* FreeRollcall/Views/HomeView.swift */; };
+		D0C569B447864F50703A396E /* FreeRollcall/App/PreviewFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716D65A9FB077E7D62098445 /* FreeRollcall/App/PreviewFixtures.swift */; };
+		EE94A53DD9045F7934514389 /* FreeRollcall/Storage/LocalStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FFC7D1694005362D619B228 /* FreeRollcall/Storage/LocalStore.swift */; };
+		F2347CE854D750F8054308C5 /* FreeRollcall/Views/RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCBE21EF9D185096662EA604 /* FreeRollcall/Views/RootView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		148149B1A14579CD0BA3EFB8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 98F54143AB4E86B28C3AFEE0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 46E0F9A8672C6455F6C7926A;
+			remoteInfo = FreeRollcall;
+		};
+		9FE15850D9525F77FD6AA721 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 98F54143AB4E86B28C3AFEE0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 46E0F9A8672C6455F6C7926A;
+			remoteInfo = FreeRollcall;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		5C136397E36E8C343192C3B4 /* UITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = UITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5FFC7D1694005362D619B228 /* FreeRollcall/Storage/LocalStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeRollcall/Storage/LocalStore.swift; sourceTree = "<group>"; };
+		6D830B0E4DD85D887B3B6438 /* UITests/AppFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITests/AppFlowTests.swift; sourceTree = "<group>"; };
+		716D65A9FB077E7D62098445 /* FreeRollcall/App/PreviewFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeRollcall/App/PreviewFixtures.swift; sourceTree = "<group>"; };
+		9663F0D6F6176262F234052C /* FreeRollcall/App/FreeRollcallApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeRollcall/App/FreeRollcallApp.swift; sourceTree = "<group>"; };
+		9DC97747A97F18FB5ABC6BAC /* FreeRollcall/Views/HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeRollcall/Views/HomeView.swift; sourceTree = "<group>"; };
+		A8B5A76C4AB1513B45879AF8 /* FreeRollcall/Views/LogsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeRollcall/Views/LogsView.swift; sourceTree = "<group>"; };
+		AADB3E5DA501D956CE98B3BD /* FreeRollcall/App/AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeRollcall/App/AppState.swift; sourceTree = "<group>"; };
+		ABE4E6146D3D57297C5FAEE0 /* FreeRollcall/Services/WebAuthenticator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeRollcall/Services/WebAuthenticator.swift; sourceTree = "<group>"; };
+		CCBE21EF9D185096662EA604 /* FreeRollcall/Views/RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeRollcall/Views/RootView.swift; sourceTree = "<group>"; };
+		EB7B3EF1A27E2528D52561BE /* AppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		EBE82DB207345F6C2F3680C6 /* AppTests/AppStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTests/AppStateTests.swift; sourceTree = "<group>"; };
+		F5423E324DD4D8DBE7F4BFDF /* FreeRollcall/Views/AccountsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeRollcall/Views/AccountsView.swift; sourceTree = "<group>"; };
+		F7FB53D550BC36BAA55CB2E1 /* FreeRollcall.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FreeRollcall.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5DB480AC47C87ADC94BED5F2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3E5017F1B8770F1BCA8F41FE /* RollcallCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9A6EB865FA06BA8B31F09174 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5457C28BA17D8D150C4008A5 /* RollcallCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B6D5A96DA4603562D8BF69FD /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		50AFD3A3524DD48FF48390DB /* FreeRollcall */ = {
+			isa = PBXGroup;
+			children = (
+				AADB3E5DA501D956CE98B3BD /* FreeRollcall/App/AppState.swift */,
+				9663F0D6F6176262F234052C /* FreeRollcall/App/FreeRollcallApp.swift */,
+				716D65A9FB077E7D62098445 /* FreeRollcall/App/PreviewFixtures.swift */,
+				ABE4E6146D3D57297C5FAEE0 /* FreeRollcall/Services/WebAuthenticator.swift */,
+				5FFC7D1694005362D619B228 /* FreeRollcall/Storage/LocalStore.swift */,
+				F5423E324DD4D8DBE7F4BFDF /* FreeRollcall/Views/AccountsView.swift */,
+				9DC97747A97F18FB5ABC6BAC /* FreeRollcall/Views/HomeView.swift */,
+				A8B5A76C4AB1513B45879AF8 /* FreeRollcall/Views/LogsView.swift */,
+				CCBE21EF9D185096662EA604 /* FreeRollcall/Views/RootView.swift */,
+			);
+			name = FreeRollcall;
+			sourceTree = "<group>";
+		};
+		666C2AE724655A458A689DF0 /* UITests */ = {
+			isa = PBXGroup;
+			children = (
+				6D830B0E4DD85D887B3B6438 /* UITests/AppFlowTests.swift */,
+			);
+			name = UITests;
+			sourceTree = "<group>";
+		};
+		B28B7AF69320201D1CF206EB = {
+			isa = PBXGroup;
+			children = (
+				50AFD3A3524DD48FF48390DB /* FreeRollcall */,
+				FC049928CC4ADE882C2502B3 /* AppTests */,
+				666C2AE724655A458A689DF0 /* UITests */,
+				FBDC4F23F93125BBEEAE800C /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		FBDC4F23F93125BBEEAE800C /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F7FB53D550BC36BAA55CB2E1 /* FreeRollcall.app */,
+				EB7B3EF1A27E2528D52561BE /* AppTests.xctest */,
+				5C136397E36E8C343192C3B4 /* UITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		FC049928CC4ADE882C2502B3 /* AppTests */ = {
+			isa = PBXGroup;
+			children = (
+				EBE82DB207345F6C2F3680C6 /* AppTests/AppStateTests.swift */,
+			);
+			name = AppTests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		46E0F9A8672C6455F6C7926A /* FreeRollcall */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 970EDC3F94C25B07C15A21FB /* Build configuration list for PBXNativeTarget "FreeRollcall" */;
+			buildPhases = (
+				AEA882F5ABD46720FF6DB8EE /* Sources */,
+				9A6EB865FA06BA8B31F09174 /* Frameworks */,
+				5AE87CA4B1F6EF9612819CAC /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = FreeRollcall;
+			packageProductDependencies = (
+				DAACAA008D245CF3C6924A2E /* RollcallCore */,
+			);
+			productName = FreeRollcall;
+			productReference = F7FB53D550BC36BAA55CB2E1 /* FreeRollcall.app */;
+			productType = "com.apple.product-type.application";
+		};
+		4A9EB61C14073EEFB22C7020 /* AppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6D04F22AD5D56EE82D9C0C1F /* Build configuration list for PBXNativeTarget "AppTests" */;
+			buildPhases = (
+				655390DC6C9391F8DBC60549 /* Sources */,
+				5DB480AC47C87ADC94BED5F2 /* Frameworks */,
+				554520BB81529EB6FBE20EE0 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				326402D4A549D421870B96A2 /* PBXTargetDependency */,
+			);
+			name = AppTests;
+			packageProductDependencies = (
+				848CC3D0AA88F2528596FAD0 /* RollcallCore */,
+			);
+			productName = AppTests;
+			productReference = EB7B3EF1A27E2528D52561BE /* AppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		9EDDF07CDE35AC3E819F75FB /* UITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 20D1A3A291381DE4E77213E2 /* Build configuration list for PBXNativeTarget "UITests" */;
+			buildPhases = (
+				11884804E635D0B2EFEF31CD /* Sources */,
+				B6D5A96DA4603562D8BF69FD /* Frameworks */,
+				E7CFCB3599C7292B30BC9B6D /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7049CC82325B8E002825BA60 /* PBXTargetDependency */,
+			);
+			name = UITests;
+			packageProductDependencies = (
+			);
+			productName = UITests;
+			productReference = 5C136397E36E8C343192C3B4 /* UITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		98F54143AB4E86B28C3AFEE0 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2700;
+			};
+			buildConfigurationList = 862894B703A6DEDF96A9DD6C /* Build configuration list for PBXProject "FreeRollcall" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = "zh-Hans";
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				"zh-Hans",
+				en,
+				Base,
+			);
+			mainGroup = B28B7AF69320201D1CF206EB;
+			packageReferences = (
+				582681C2EAE02B3F3D399C0C /* XCLocalSwiftPackageReference "." */,
+			);
+			productRefGroup = FBDC4F23F93125BBEEAE800C /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				46E0F9A8672C6455F6C7926A /* FreeRollcall */,
+				4A9EB61C14073EEFB22C7020 /* AppTests */,
+				9EDDF07CDE35AC3E819F75FB /* UITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		554520BB81529EB6FBE20EE0 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5AE87CA4B1F6EF9612819CAC /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7CFCB3599C7292B30BC9B6D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		11884804E635D0B2EFEF31CD /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				057B82795D59DCF0B1EC7217 /* UITests/AppFlowTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		655390DC6C9391F8DBC60549 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9BBE54935EA726D2049045E6 /* AppTests/AppStateTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AEA882F5ABD46720FF6DB8EE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B60941AA98443DD8F32468F9 /* FreeRollcall/App/AppState.swift in Sources */,
+				18208052E4D4E7172090B100 /* FreeRollcall/App/FreeRollcallApp.swift in Sources */,
+				D0C569B447864F50703A396E /* FreeRollcall/App/PreviewFixtures.swift in Sources */,
+				B663C2BE17B8B48B717F66E7 /* FreeRollcall/Services/WebAuthenticator.swift in Sources */,
+				EE94A53DD9045F7934514389 /* FreeRollcall/Storage/LocalStore.swift in Sources */,
+				0B12BA8F0AB17DEDECFC686C /* FreeRollcall/Views/AccountsView.swift in Sources */,
+				CA28033F97B33EAD263ABE04 /* FreeRollcall/Views/HomeView.swift in Sources */,
+				842C1F525776C763EC5E7D14 /* FreeRollcall/Views/LogsView.swift in Sources */,
+				F2347CE854D750F8054308C5 /* FreeRollcall/Views/RootView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		326402D4A549D421870B96A2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 46E0F9A8672C6455F6C7926A /* FreeRollcall */;
+			targetProxy = 148149B1A14579CD0BA3EFB8 /* PBXContainerItemProxy */;
+		};
+		7049CC82325B8E002825BA60 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 46E0F9A8672C6455F6C7926A /* FreeRollcall */;
+			targetProxy = 9FE15850D9525F77FD6AA721 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		3211EEA1644E9AAFA648AB61 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "cn.prina.free-rollcall.UITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = FreeRollcall;
+			};
+			name = Debug;
+		};
+		3C29AA6C120D4EC323A661C6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "cn.prina.free-rollcall.UITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = FreeRollcall;
+			};
+			name = Release;
+		};
+		6EC328C754738A77D4A61D1C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "cn.prina.free-rollcall.AppTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FreeRollcall.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/FreeRollcall";
+			};
+			name = Debug;
+		};
+		889298B6A7FA32DC8C3C4793 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 5F3RB4VBUA;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = free_rollcall;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UIUserInterfaceStyle = Light;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "cn.prina.free-rollcall";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		89E1FD6268CC0F221A2BE178 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_COMPILATION_MODE = singlefile;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		E5491E0D06A0BD9C4E601F16 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "cn.prina.free-rollcall.AppTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FreeRollcall.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/FreeRollcall";
+			};
+			name = Release;
+		};
+		E6DE6C99132752C914FEF632 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		FC02506EC732C7A156A6B637 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 5F3RB4VBUA;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = free_rollcall;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UIUserInterfaceStyle = Light;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "cn.prina.free-rollcall";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		20D1A3A291381DE4E77213E2 /* Build configuration list for PBXNativeTarget "UITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3211EEA1644E9AAFA648AB61 /* Debug */,
+				3C29AA6C120D4EC323A661C6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		6D04F22AD5D56EE82D9C0C1F /* Build configuration list for PBXNativeTarget "AppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6EC328C754738A77D4A61D1C /* Debug */,
+				E5491E0D06A0BD9C4E601F16 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		862894B703A6DEDF96A9DD6C /* Build configuration list for PBXProject "FreeRollcall" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				89E1FD6268CC0F221A2BE178 /* Debug */,
+				E6DE6C99132752C914FEF632 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		970EDC3F94C25B07C15A21FB /* Build configuration list for PBXNativeTarget "FreeRollcall" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				889298B6A7FA32DC8C3C4793 /* Debug */,
+				FC02506EC732C7A156A6B637 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		582681C2EAE02B3F3D399C0C /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		848CC3D0AA88F2528596FAD0 /* RollcallCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 582681C2EAE02B3F3D399C0C /* XCLocalSwiftPackageReference "." */;
+			productName = RollcallCore;
+		};
+		DAACAA008D245CF3C6924A2E /* RollcallCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 582681C2EAE02B3F3D399C0C /* XCLocalSwiftPackageReference "." */;
+			productName = RollcallCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 98F54143AB4E86B28C3AFEE0 /* Project object */;
+}
