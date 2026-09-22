@@ -44,23 +44,25 @@ private actor FixtureTransport: HTTPTransport {
         } else if request.path == "/api/radar/rollcalls" { body = .object(["rollcalls": .array([])]) }
         else if request.path.contains("/student/") {
             body = .object(["rollcalls": .array([
-                record("701", radar: false, active: true), record("702", radar: true, active: true),
-                record("703", radar: false, active: false)
+                record("701", radar: false, active: true, includeCode: false), record("702", radar: true, active: true),
+                record("703", radar: false, active: false, includeCode: false),
+                record("704", radar: false, active: false, includeCode: false)
             ])])
         } else if request.path.contains("/student_rollcalls") {
             let id = String(request.path.split(separator: "/")[2])
-            var fields = record(id, radar: id == "702", active: id != "703").object!
-            fields["status"] = .string(id == "703" ? "finished" : "active")
+            let active = id == "701" || id == "702"
+            var fields = record(id, radar: id == "702", active: active).object!
+            fields["status"] = .string(active ? "active" : "finished")
             fields["student_rollcalls"] = .array([.object(["student_id": .string(studentID), "status": .string(answered.contains(id) || id == "703" ? "on_call_fine" : "absent")])])
             body = .object(fields)
         } else { throw RollcallError.message("演示数据未提供此操作") }
         return APIResponse(status: 200, data: try body.encoded())
     }
-    private func record(_ id: String, radar: Bool, active: Bool) -> JSONValue {
+    private func record(_ id: String, radar: Bool, active: Bool, includeCode: Bool = true) -> JSONValue {
         .object(["rollcall_id": .string(id), "is_number": .bool(!radar), "is_radar": .bool(radar),
                  "is_expired": .bool(!active), "rollcall_status": .string(active ? "active" : "finished"),
-                 "status": .string(answered.contains(id) || !active ? "on_call_fine" : "absent"),
-                 "number_code": radar ? .null : .string("0123"), "rollcall_time": .string("2026-09-20T08:30:00+08:00")])
+                 "status": .string(answered.contains(id) || id == "703" ? "on_call_fine" : "absent"),
+                 "number_code": radar || !includeCode ? .null : .string("0123"), "rollcall_time": .string("2026-09-20T08:30:00+08:00")])
     }
 }
 #endif

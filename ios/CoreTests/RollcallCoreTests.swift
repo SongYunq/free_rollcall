@@ -38,6 +38,24 @@ final class RollcallCoreTests: XCTestCase {
         XCTAssertTrue(record.hasEnded); XCTAssertFalse(record.canSubmit)
         XCTAssertEqual(record.stateText, "已结束")
     }
+    func testOnlyExplicitAbsenceAfterEndingGetsAbsentLabel() throws {
+        var record = try Attendance(json: json(#"{"rollcall_id":1,"is_number":true,"rollcall_status":"finished"}"#))
+        for status: String? in [nil, "", "unrecognized", "on_call_fine", "on_call_late", "present", "attended", "late"] {
+            record.personalStatus = status
+            XCTAssertFalse(record.isAbsent, "\(status ?? "missing") must not be treated as absent")
+            if ["on_call_late", "late"].contains(status ?? "") { XCTAssertEqual(record.stateText, "已签到 · 迟到") }
+            else if ["on_call_fine", "present", "attended"].contains(status ?? "") { XCTAssertEqual(record.stateText, "已签到") }
+            else { XCTAssertEqual(record.stateText, "已结束") }
+        }
+        record.personalStatus = "absent"
+        XCTAssertTrue(record.isAbsent); XCTAssertEqual(record.stateText, "缺勤")
+        record.activityStatus = "active"
+        XCTAssertFalse(record.isAbsent); XCTAssertEqual(record.stateText, "正在签到")
+        record.personalStatus = "on_call_fine"
+        XCTAssertFalse(record.isAbsent); XCTAssertEqual(record.stateText, "已签到")
+        record.personalStatus = "on_call_late"
+        XCTAssertFalse(record.isAbsent); XCTAssertEqual(record.stateText, "已签到 · 迟到")
+    }
     func testCoursePaginationAndRepeatedPageStop() throws {
         let value = try json(#"{"courses":[{"id":1,"display_name":"A"},{"id":2,"name":"B"},{"id":2,"name":"B"}],"pages":2,"total":4}"#)
         let first = try PageParser.parse(value, key: "courses", page: 1, size: 2, transform: Course.init(json:))

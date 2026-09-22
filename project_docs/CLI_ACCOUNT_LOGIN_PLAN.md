@@ -177,7 +177,7 @@ async def login_and_get_cookie(
 
 ### 已核实的实际页面
 
-- 2026-09-18 只读访问学校登录页，确认畅课经统一认证中转页跳转至 `ids.xmu.edu.cn`，默认显示扫码登录。
+- 2026-09-18 只读访问作者所在高校的登录页，确认畅课经统一认证中转页跳转至该校统一身份认证登录页，默认显示扫码登录。
 - 账号登录切换链接包含 `type=userNameLogin`；账号表单为 `#pwdFromId`，其中账号框为 `#username`、密码框为 `#password`、提交入口为 `#login_submit`。
 - 该表单内 `#showErrorTip` 和 `#showWarnTip` 用于反馈；图形验证码为 `#captcha`，滑块容器为 `#sliderCaptchaDiv`。
 - 密码加密由网站原有提交脚本完成；程序点击原按钮，不重写认证协议。命令行不做输入格式正则，网站自身的输入限制仍然生效。

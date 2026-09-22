@@ -82,12 +82,15 @@ struct HistoryView: View {
                             HStack(alignment: .firstTextBaseline) {
                                 Text(record.kind.title).fontWeight(.medium)
                                 Spacer(minLength: 8)
-                                Text(record.stateText).font(.caption).foregroundStyle(.secondary)
+                                Text(record.stateText).font(.caption)
+                                    .foregroundStyle(record.isAbsent ? Color.red : Color.secondary)
                             }
                             Text(record.date.map(DisplayDate.string) ?? record.rawDate ?? "时间未提供")
                                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            if record.kind == .number, let code = record.numberCode {
-                                Text("签到码  \(code)").font(.body.monospacedDigit().weight(.semibold)).textSelection(.enabled)
+                            if record.kind == .number {
+                                let code = record.numberCode.flatMap { $0.isEmpty ? nil : $0 }
+                                Text("签到码  \(code ?? (state.loadingHistory ? "正在获取…" : "未获取"))")
+                                    .font(.body.monospacedDigit().weight(.semibold)).textSelection(.enabled)
                             }
                             if record.canSubmit {
                                 Text(state.operationRecordID == record.id ? "正在签到…" : "点击此条目签到")
@@ -98,12 +101,7 @@ struct HistoryView: View {
                     }.padding(.vertical, 14).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).disabled(state.busy)
-                .task(id: record.id) {
-                    if record.isActive && record.kind == .number && record.numberCode == nil {
-                        do { _ = try await state.detail(record) }
-                        catch { if error as? RollcallError != .cancelled { state.historyError = error.localizedDescription } }
-                    }
-                }
+                .accessibilityIdentifier("attendance-\(record.id)")
             }
             if state.loadingHistory { ProgressView("正在加载签到记录").frame(maxWidth: .infinity).listRowSeparator(.hidden) }
             else if state.records.isEmpty && state.historyError == nil {
