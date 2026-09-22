@@ -77,9 +77,12 @@ public struct Attendance: Identifiable, Hashable, Sendable {
         return activityStatus == "active" || isExpired == false
     }
     public var canSubmit: Bool { isActive && !isAnswered && (kind == .number || kind == .radar) }
+    // An unknown/missing personal status is not evidence of absence.
+    public var isAbsent: Bool { hasEnded && personalStatus == "absent" }
     public var stateText: String {
         if isAnswered { return personalStatus == "on_call_late" || personalStatus == "late" ? "已签到 · 迟到" : "已签到" }
-        if isActive { return "进行中" }
+        if isActive { return "正在签到" }
+        if isAbsent { return "缺勤" }
         if hasEnded { return "已结束" }
         return "状态待确认"
     }

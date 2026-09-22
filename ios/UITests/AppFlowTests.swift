@@ -1,6 +1,29 @@
 import XCTest
 
 final class AppFlowTests: XCTestCase {
+    @MainActor func testHistoryCodesKeepAnsweredAndAbsentRowsDistinct() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-fixture"]
+        app.launch()
+        XCTAssertTrue(app.buttons["enter-courses"].waitForExistence(timeout: 10))
+        app.buttons["enter-courses"].tap()
+        let course = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "软件工程与实践")).firstMatch
+        XCTAssertTrue(course.waitForExistence(timeout: 5)); course.tap()
+        for (id, status) in [("701", "正在签到"), ("703", "已签到"), ("704", "缺勤")] {
+            let row = app.buttons["attendance-\(id)"]
+            XCTAssertTrue(row.waitForExistence(timeout: 5))
+            for _ in 0..<4 {
+                if row.isHittable { break }
+                app.swipeUp()
+            }
+            let loaded = NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "签到码  0123", status)
+            expectation(for: loaded, evaluatedWith: row)
+            waitForExpectations(timeout: 5)
+            if id != "704" { XCTAssertFalse(row.label.contains("缺勤")) }
+            XCTAssertFalse(app.navigationBars["签到详情"].exists)
+        }
+    }
+
     @MainActor func testModernSystemTabBarPreservesCourseNavigation() throws {
         guard #available(iOS 26.0, *) else { throw XCTSkip("系统液态玻璃底栏仅用于 iOS 26 及以上") }
         let app = XCUIApplication()

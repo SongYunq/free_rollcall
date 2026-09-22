@@ -23,8 +23,10 @@ actor StateTransport: HTTPTransport {
 
 actor SequenceTransport: HTTPTransport {
     private var replies: [APIResponse]
+    private(set) var requests: [APIRequest] = []
     init(_ replies: [(Int, String)]) { self.replies = replies.map { APIResponse(status: $0.0, data: Data($0.1.utf8)) } }
     func send(_ request: APIRequest) async throws -> APIResponse {
+        requests.append(request)
         guard !replies.isEmpty else { throw RollcallError.message("Unexpected request") }
         return replies.removeFirst()
     }
@@ -169,27 +171,70 @@ actor SequenceTransport: HTTPTransport {
         let transport = SequenceTransport([
             (200, #"{"rollcalls":[{"rollcall_id":7,"is_number":true,"is_expired":false,"status":"absent"}]}"#),
             (200, #"{"rollcalls":[]}"#),
+            (200, #"{"status":"active","is_number":true,"number_code":"0012"}"#),
             (200, #"{"status":"active","is_number":true,"number_code":"0012","student_rollcalls":[{"student_id":9,"status":"on_call_fine"}]}"#),
             (200, #"{"rollcalls":[{"rollcall_id":8,"is_number":true,"rollcall_status":"finished"}]}"#),
-            (200, #"{"rollcalls":[]}"#)
+            (200, #"{"rollcalls":[]}"#), (200, #"{"number_code":"0034"}"#)
         ])
         let state = AppState(store: store)
         state.authentication = { id, username, _, _ in try self.makeSession(id, username: username, transport: transport) }
         _ = try await state.login(account.id)
         let course = Course(id: "1", name: "Test")
         await state.loadHistory(course: course, reset: true)
+        XCTAssertEqual(state.records.first?.numberCode, "0012")
         _ = try await state.detail(try XCTUnwrap(state.records.first))
         await state.loadHistory(course: course, reset: false)
         let record = try XCTUnwrap(state.records.first(where: { $0.id == "7" }))
         XCTAssertTrue(record.isAnswered); XCTAssertEqual(record.numberCode, "0012")
         XCTAssertEqual(state.records.count, 2)
+        XCTAssertEqual(state.records.first(where: { $0.id == "8" })?.numberCode, "0034")
+        XCTAssertNil(state.historyError)
+    }
+    func testAutomaticCodesPreserveEveryExistingAttendanceState() async throws {
+        let store = try LocalStore(inMemory: true)
+        let account = try store.saveAccount(id: nil, username: "a", password: "a", note: "")
+        let history = #"{"rollcalls":[{"rollcall_id":7,"is_number":true,"rollcall_status":"finished","status":"on_call_fine","rollcall_time":"2026-09-20T08:00:00Z"},{"rollcall_id":8,"is_number":true,"rollcall_status":"finished","status":"on_call_late","rollcall_time":"2026-09-19T08:00:00Z"},{"rollcall_id":9,"is_number":true,"rollcall_status":"finished","rollcall_time":"2026-09-18T08:00:00Z"},{"rollcall_id":10,"is_number":true,"rollcall_status":"finished","status":"absent","rollcall_time":"2026-09-17T08:00:00Z"}]}"#
+        // The code endpoint's statuses must not replace the history row's own status.
+        let conflictingDetail = #"{"number_code":"0012","status":"active","student_rollcalls":[{"student_id":9,"status":"absent"}]}"#
+        let transport = SequenceTransport([(200, history), (200, #"{"rollcalls":[]}"#)] + Array(repeating: (200, conflictingDetail), count: 4))
+        let state = AppState(store: store)
+        state.authentication = { id, username, _, _ in try self.makeSession(id, username: username, transport: transport) }
+        _ = try await state.login(account.id)
+        await state.loadHistory(course: Course(id: "1", name: "Test"), reset: true)
+        XCTAssertEqual(state.records.map(\.stateText), ["已签到", "已签到 · 迟到", "已结束", "缺勤"])
+        XCTAssertEqual(state.records.map(\.isAbsent), [false, false, false, true])
+        XCTAssertTrue(state.records.allSatisfy { $0.numberCode == "0012" && $0.hasEnded })
+        XCTAssertNil(state.historyError); XCTAssertTrue(store.logs.isEmpty)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 6); XCTAssertTrue(requests.allSatisfy { $0.method == "GET" })
+    }
+    func testCodeFailureAndRetryNeverTurnAnsweredHistoryIntoAbsence() async throws {
+        let store = try LocalStore(inMemory: true)
+        let account = try store.saveAccount(id: nil, username: "a", password: "a", note: "")
+        let history = #"{"rollcalls":[{"rollcall_id":7,"is_number":true,"status":"on_call_fine","rollcall_status":"finished","rollcall_time":"2026-09-20T08:00:00Z"},{"rollcall_id":8,"is_number":true,"status":"absent","rollcall_status":"finished","rollcall_time":"2026-09-19T08:00:00Z"}]}"#
+        let code = #"{"number_code":"0034","status":"finished"}"#
+        let transport = SequenceTransport([
+            (200, history), (200, #"{"rollcalls":[]}"#), (500, "{}"), (200, code),
+            (200, history), (200, #"{"rollcalls":[]}"#), (200, code), (200, code)
+        ])
+        let state = AppState(store: store)
+        state.authentication = { id, username, _, _ in try self.makeSession(id, username: username, transport: transport) }
+        _ = try await state.login(account.id)
+        let course = Course(id: "1", name: "Test")
+        await state.loadHistory(course: course, reset: true)
+        XCTAssertEqual(state.records.map(\.stateText), ["已签到", "缺勤"])
+        XCTAssertNil(state.records[0].numberCode); XCTAssertEqual(state.records[1].numberCode, "0034")
+        XCTAssertEqual(state.historyError, "部分签到码未获取，可下拉刷新重试")
+        await state.loadHistory(course: course, reset: true)
+        XCTAssertEqual(state.records.map(\.stateText), ["已签到", "缺勤"])
+        XCTAssertTrue(state.records.allSatisfy { $0.numberCode == "0034" }); XCTAssertNil(state.historyError)
     }
     func testHistoryRefreshFailureRetainsSameCourseButSwitchClearsOldCourse() async throws {
         let store = try LocalStore(inMemory: true)
         let account = try store.saveAccount(id: nil, username: "a", password: "a", note: "")
         let transport = SequenceTransport([
             (200, #"{"rollcalls":[{"rollcall_id":7,"rollcall_status":"finished"}]}"#),
-            (200, #"{"rollcalls":[]}"#), (500, "{}"), (500, "{}")
+            (200, #"{"rollcalls":[]}"#), (200, #"{"is_number":true,"number_code":"0012"}"#), (500, "{}"), (500, "{}")
         ])
         let state = AppState(store: store)
         state.authentication = { id, username, _, _ in try self.makeSession(id, username: username, transport: transport) }

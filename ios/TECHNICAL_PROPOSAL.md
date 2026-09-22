@@ -139,7 +139,7 @@ iOS 26 及以上使用 `TabView`（系统标签栏容器），由系统处理玻
 
 ### 5.3 雷达签到
 
-固定参考 [XMU-Rollcall-Bot](https://github.com/KrsMt-0113/XMU-Rollcall-Bot) 的 `c7de02b11da3433a047bab29dbbbbbb4c855a484`，移植 `verify.py` 的 `send_radar`：
+固定参考[签到机器人参考项目](https://github.com/KrsMt-0113/XMU-Rollcall-Bot)的 `c7de02b11da3433a047bab29dbbbbbb4c855a484`，移植 `verify.py` 的 `send_radar`：
 
 - 两个预设点：`(24.3, 118.0)`、`(24.6, 118.2)`
 - 相同请求地址、方法、相关请求头、精度、高度与空值字段；每次请求新设备标识

@@ -188,6 +188,29 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
                 historyError = "历史记录已加载，当前活动刷新失败，可下拉重试"
             }
             records.sort { a, b in a.isActive != b.isActive ? a.isActive : (a.date ?? .distantPast) > (b.date ?? .distantPast) }
+            // History can omit numeric codes, including those of finished activities.
+            // Fetch codes without replacing the history endpoint's personal/activity status.
+            let missing = records.filter { ($0.kind == .number && $0.numberCode?.isEmpty != false) || $0.kind == .unknown }
+            var incomplete = false
+            for record in missing {
+                guard token == historyRequest, !Task.isCancelled else { return }
+                do {
+                    let detail = try await read { try await $0.client.detail(id: record.id, studentID: $0.profile.id) }
+                    guard token == historyRequest, !Task.isCancelled else { return }
+                    if let index = records.firstIndex(where: { $0.id == record.id }) {
+                        records[index].numberCode = detail.numberCode ?? records[index].numberCode
+                        if records[index].kind == .unknown { records[index].kind = detail.kind }
+                        if records[index].kind == .number && records[index].numberCode?.isEmpty != false { incomplete = true }
+                    }
+                } catch {
+                    guard token == historyRequest, !Task.isCancelled, error as? RollcallError != .cancelled else { return }
+                    incomplete = true
+                }
+            }
+            if incomplete {
+                let message = "部分签到码未获取，可下拉刷新重试"
+                historyError = historyError.map { "\($0)；\(message)" } ?? message
+            }
         } catch { if token == historyRequest { historyError = error.localizedDescription } }
     }
     func detail(_ record: Attendance, allowAuthentication: Bool = true) async throws -> Attendance {
