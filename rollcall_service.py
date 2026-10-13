@@ -1,12 +1,13 @@
 """畅课登录与查询业务层，供命令行及后续脚本直接调用。
 
-查询沿用原接口参数、数据解析和返回值；此模块不依赖 UI、不读取终端输入。
+此模块不依赖 UI、不读取终端输入；命令行通过课程日期接口读取签到码。
 登录使用 Playwright 异步 API，查询使用 requests 同步 API。
 调用端负责事件循环、后台线程、用户提示与结果展示。
 """
 
 import asyncio
 import re
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 from playwright.async_api import Error as PlaywrightError
@@ -60,6 +61,10 @@ class InvalidCredentialsError(LoginError):
 
 class BrowserLoginRequired(LoginError):
     """网站需要验证码或其他人工认证。"""
+
+
+class RollcallQueryError(Exception):
+    """课程或签到查询失败；错误信息不包含凭证或其他学生的信息。"""
 
 
 # 只观察已核实的表单状态，不修改或替代网站的认证逻辑。
@@ -258,14 +263,60 @@ async def _login_and_extract(page, context, username, password, log, manual):
     return cookie_str, student_id
 
 
+def _query_data(response, subject):
+    """统一读取查询结果，不把原始响应或登录凭证带入错误信息。"""
+    if response.status_code in (401, 403) or 300 <= response.status_code < 400:
+        raise RollcallQueryError(f"登录已失效或无权查询{subject}，请重新登录后重试")
+    if response.status_code != 200:
+        raise RollcallQueryError(f"{subject}查询失败，服务返回状态码 {response.status_code}")
+    try:
+        return response.json()
+    except ValueError:
+        raise RollcallQueryError(f"{subject}查询返回的数据无法解析，请稍后重试") from None
+
+
+def _query_rows(data, key, subject):
+    """兼容原接口的列表、具名列表及 data 包装。"""
+    container = data
+    if isinstance(data, dict) and key not in data and isinstance(data.get("data"), dict):
+        container = data["data"]
+    if isinstance(container, list):
+        rows = container
+    elif isinstance(container, dict):
+        rows = container.get(key, container.get("data"))
+    else:
+        rows = None
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise RollcallQueryError(f"{subject}查询返回的数据格式有误")
+    return rows, container
+
+
+def _courses_have_more(data, container, page, page_size, row_count):
+    # 优先使用服务明确给出的分页信息；旧格式则按每页容量判断。
+    for key in ("has_more", "pages", "total"):
+        value = container.get(key) if isinstance(container, dict) else None
+        if value is None and isinstance(data, dict):
+            value = data.get(key)
+        if value is None:
+            continue
+        if key == "has_more":
+            if not isinstance(value, bool):
+                raise RollcallQueryError("课程列表查询返回的分页信息有误")
+            return value
+        if isinstance(value, bool) or not re.fullmatch(r"[0-9]+", str(value)):
+            raise RollcallQueryError("课程列表查询返回的分页信息有误")
+        return page < int(value) if key == "pages" else page * page_size < int(value)
+    return row_count >= page_size
+
+
 def get_courses(cookie, s_id, y_id, log=_ignore_log):
-    """读取本学期课程，按课程 ID 去重并保留接口返回顺序。"""
+    """分页读取本学期课程，按课程 ID 去重并保留接口返回顺序。"""
     log("[INFO] 正在获取本学期课程列表...")
     headers = {
         **HEADERS_BASE,
         "cookie": cookie,
         "content-type": "application/json",
-        "referer": "https://lnt.xmu.edu.cn/user/index",
+        "referer": f"{BASE_URL}/user/index",
     }
     payload = {
         "conditions": {
@@ -276,68 +327,178 @@ def get_courses(cookie, s_id, y_id, log=_ignore_log):
             "display_studio_list": False,
         },
         "fields": "id,name,display_name",
-        "page": 1,
         "page_size": 30,
         "showScorePassedStatus": False,
     }
-    resp = requests.post(f"{BASE_URL}/api/my-courses", headers=headers, json=payload)
-    try:
-        data = resp.json()
-    except Exception:
-        log(f"[WARN] 返回数据解析失败: {resp.text}")
-        return []
-
-    if isinstance(data, list):
-        courses = data
-    elif "courses" in data:
-        courses = data["courses"]
-    elif "data" in data:
-        courses = data["data"]
-    else:
-        log("[WARN] 无法解析课程列表数据")
-        return []
-
     seen, unique = set(), []
-    for c in courses:
-        cid = c.get("id")
-        if cid not in seen:
-            seen.add(cid)
-            unique.append(c)
-    return unique
+    # 正常课程列表远少于此上限，避免服务错误导致无限分页。
+    for page in range(1, 101):
+        try:
+            resp = requests.post(
+                f"{BASE_URL}/api/my-courses", headers=headers,
+                json={**payload, "page": page}, timeout=15, allow_redirects=False,
+            )
+        except requests.Timeout:
+            raise RollcallQueryError("课程列表查询超时，请稍后重试") from None
+        except requests.RequestException:
+            raise RollcallQueryError("课程列表查询失败，请检查网络后重试") from None
+        data = _query_data(resp, "课程列表")
+        courses, container = _query_rows(data, "courses", "课程列表")
+        added = 0
+        for course in courses:
+            cid = course.get("id")
+            if not isinstance(cid, (int, str)) or isinstance(cid, bool) or not str(cid).strip():
+                raise RollcallQueryError("课程列表查询返回的课程编号有误")
+            key = str(cid)
+            if key not in seen:
+                seen.add(key)
+                unique.append(course)
+                added += 1
+        more = _courses_have_more(data, container, page, payload["page_size"], len(courses))
+        if courses and not added:
+            raise RollcallQueryError("课程列表分页返回了重复数据，无法确认完整课程列表，请稍后重试")
+        if not more:
+            return unique
+        if not courses:
+            raise RollcallQueryError("课程列表分页数据不完整，请稍后重试")
+    raise RollcallQueryError("课程列表分页数量异常，请稍后重试")
 
 
 def get_latest_rollcall_id(course_id, cookie, student_id):
     """沿用取列表最后一项的规则，返回 (签到 ID, 发起时间)。"""
     headers = {**HEADERS_BASE, "cookie": cookie}
-    url  = (
+    url = (
         f"{BASE_URL}/api/course/{course_id}"
         f"/student/{student_id}/rollcalls?page=1&page_size=99"
     )
-    resp = requests.get(url, headers=headers)
-    data = resp.json()
-
-    if isinstance(data, list):
-        rollcalls = data
-    elif "rollcalls" in data:
-        rollcalls = data["rollcalls"]
-    elif "data" in data:
-        rollcalls = data["data"]
-    else:
-        rollcalls = []
-
+    try:
+        resp = requests.get(url, headers=headers, timeout=15, allow_redirects=False)
+    except requests.Timeout:
+        raise RollcallQueryError("签到列表查询超时，请稍后重试") from None
+    except requests.RequestException:
+        raise RollcallQueryError("签到列表查询失败，请检查网络后重试") from None
+    rollcalls, _ = _query_rows(_query_data(resp, "签到列表"), "rollcalls", "签到列表")
     if not rollcalls:
         return None, None
     latest = rollcalls[-1]
-    return (
-        latest.get("id") or latest.get("rollcall_id"),
-        latest.get("rollcall_time") or latest.get("created_at"),
-    )
+    rollcall_id = latest.get("id") or latest.get("rollcall_id")
+    if not isinstance(rollcall_id, (str, int)) or isinstance(rollcall_id, bool) or not str(rollcall_id).strip():
+        raise RollcallQueryError("签到列表查询返回的签到编号有误")
+    return rollcall_id, latest.get("rollcall_time") or latest.get("created_at")
 
 
 def get_number_code(rollcall_id, cookie):
-    """返回接口原始的 (number_code, status, end_time)，不格式化。"""
+    """保留给历史桌面端的旧查询接口，命令行不再调用。"""
     headers = {**HEADERS_BASE, "cookie": cookie}
     url  = f"{BASE_URL}/api/rollcall/{rollcall_id}/student_rollcalls"
     resp = requests.get(url, headers=headers)
     data = resp.json()
     return data.get("number_code"), data.get("status"), data.get("end_time")
+
+
+def get_rollcall_date(rollcall_time):
+    """将签到时间转换为北京时间日期；无时区的时间按北京时间处理。"""
+    school_timezone = timezone(timedelta(hours=8))
+    try:
+        started_at = datetime.fromisoformat(rollcall_time.replace("Z", "+00:00"))
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=school_timezone)
+        return started_at.astimezone(school_timezone).date().isoformat()
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        raise RollcallQueryError("签到时间缺失或格式有误，无法确定签到查询日期") from None
+
+
+def get_timetable_rollcalls(course_id, rollcall_date, cookie):
+    """读取指定课程、北京时间日期的签到条目，仅排除明确属于其他课程的数据。"""
+    try:
+        if not isinstance(rollcall_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", rollcall_date):
+            raise ValueError
+        date.fromisoformat(rollcall_date)
+    except (TypeError, ValueError):
+        raise RollcallQueryError("查询日期有误，请使用 YYYY-MM-DD 格式的有效日期") from None
+    try:
+        resp = requests.get(
+            f"{BASE_URL}/api/timetable_rollcalls",
+            headers={**HEADERS_BASE, "cookie": cookie},
+            params={"course_ids": course_id, "rollcall_date": rollcall_date},
+            timeout=15,
+            allow_redirects=False,
+        )
+    except requests.Timeout:
+        raise RollcallQueryError("签到查询超时，请稍后重试") from None
+    except requests.RequestException:
+        raise RollcallQueryError("签到查询失败，请检查网络后重试") from None
+    data = _query_data(resp, "签到")
+    if not isinstance(data, dict) or not isinstance(data.get("rollcalls"), list):
+        raise RollcallQueryError("签到查询返回的数据格式有误")
+    records = []
+    for rollcall in data["rollcalls"]:
+        if not isinstance(rollcall, dict):
+            raise RollcallQueryError("签到查询返回的数据格式有误")
+        course = rollcall.get("course")
+        returned_course_id = course.get("id") if isinstance(course, dict) else None
+        if returned_course_id is None:
+            returned_course_id = rollcall.get("course_id")
+        if returned_course_id is not None and str(returned_course_id) != str(course_id):
+            continue
+        records.append(rollcall)
+    return records
+
+
+def get_timetable_rollcall(course_id, rollcall_id, rollcall_time, cookie):
+    """按日期、课程和签到 ID 精确匹配单个条目，不回退到旧详情接口。"""
+    if not isinstance(rollcall_id, (str, int)) or isinstance(rollcall_id, bool) or not str(rollcall_id).strip():
+        raise RollcallQueryError("签到编号缺失或格式有误，无法查询本次签到")
+    rollcall_date = get_rollcall_date(rollcall_time)
+    for rollcall in get_timetable_rollcalls(course_id, rollcall_date, cookie):
+        if str(rollcall.get("id") or rollcall.get("rollcall_id")) == str(rollcall_id):
+            return rollcall
+    raise RollcallQueryError("该日期的查询结果中未找到本次签到，请重新选择课程重试")
+
+
+def get_timetable_number_code(course_id, rollcall_id, rollcall_time, cookie):
+    """按签到发起日和 ID 查询，返回 (number_code, status, end_time)。"""
+    rollcall = get_timetable_rollcall(course_id, rollcall_id, rollcall_time, cookie)
+    # 仅使用签到条目本身的状态，不读取 student_rollcalls 中的个人状态。
+    return rollcall.get("number_code"), rollcall.get("status"), rollcall.get("end_time")
+
+
+def summarize_attendance(rollcall):
+    """返回去重人数及状态分布，不返回学生身份或名单。
+
+    明确出勤归为 signed，只有 absent 归为 unsigned，其他归为 unknown。
+    同一学生存在不同状态时归为 conflict，计入 unknown，不猜测最终状态。
+    缺失学生 ID 时按记录 ID 去重；两种 ID 都缺失时按独立条目计数。
+    """
+    students = rollcall.get("student_rollcalls") if isinstance(rollcall, dict) else None
+    if not isinstance(students, list) or any(not isinstance(row, dict) for row in students):
+        raise RollcallQueryError("签到查询未返回有效学生名单，无法统计人数")
+    states = {}
+    for index, student in enumerate(students):
+        identity = None
+        for field in ("student_id", "id"):
+            value = student.get(field)
+            if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value).strip():
+                identity = (field, str(value))
+                break
+        if identity is None:
+            identity = ("row", index)
+        status = student.get("status")
+        if status is None:
+            status = student.get("rollcall_status")
+        status = status.strip().lower() if isinstance(status, str) and status.strip() else "unknown"
+        states.setdefault(identity, set()).add(status)
+
+    signed_statuses = {"on_call", "on_call_fine", "on_call_late", "present", "attended", "late"}
+    summary = {"total": len(states), "signed": 0, "unsigned": 0, "unknown": 0, "status_counts": {}}
+    for statuses in states.values():
+        status = next(iter(statuses)) if len(statuses) == 1 else "conflict"
+        if status in signed_statuses:
+            summary["signed"] += 1
+        elif status == "absent":
+            summary["unsigned"] += 1
+        else:
+            summary["unknown"] += 1
+        summary["status_counts"][status] = summary["status_counts"].get(status, 0) + 1
+    summary["status_counts"] = dict(sorted(summary["status_counts"].items()))
+    return summary
