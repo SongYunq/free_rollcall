@@ -37,8 +37,16 @@ PyInstaller 不属于源码运行要求；`requirements.txt` 目前未锁定具�
 ## 启动和验证
 
 ```bash
-# CLI
+# 交互命令行
 .venv/bin/python -B free_rollcall_cli.py
+
+# 查看帮助，不读取账号文件、不登录
+.venv/bin/python -B free_rollcall_cli.py help
+.venv/bin/python -B free_rollcall_cli.py attendance --help
+
+# 单次命令：查询后退出
+.venv/bin/python -B free_rollcall_cli.py courses
+.venv/bin/python -B free_rollcall_cli.py attendance --course-id 110405
 
 # 导入检查：不启动浏览器或桌面窗口
 .venv/bin/python -B -c "import rollcall_service, free_rollcall_cli, terminal_log"
@@ -46,12 +54,17 @@ PyInstaller 不属于源码运行要求；`requirements.txt` 目前未锁定具�
 
 `-B` 表示不生成或更新字节码缓存。
 命令行使用 Playwright Chromium 后台填写账号密码，业务层只在显式调用登录函数时启动浏览器。
-有效默认配置存在时等待 2 秒，Enter 切换到终端明文输入；默认配置位于根目录 `account.json`，
+无参数交互启动且有效默认配置存在时等待 2 秒，Enter 切换到终端明文输入；默认配置位于根目录 `account.json`，
 填写方法见 README。连续 3 次凭证错误后打开网页登录；验证码或其他额外认证可以提前转入网页。
 命令行不做账号格式正则校验，网站自身的规则仍然生效。
 账号文件不随仓库提交，空白模板 `account.example.json` 随仓库提供。
 
-输入被重定向时不倒计时、不打开人工认证窗口；完整无交互课程查询尚未提供。
+带子命令启动时默认使用账号文件，不倒计时、不等待手动输入，也不打开人工认证窗口；
+没有有效配置或需要人工认证时以非零退出码结束。显式人工登录可使用
+`.venv/bin/python -B free_rollcall_cli.py --manual-login attendance --course-id 110405`，
+`--manual-login` 放在子命令前，仅用于交互终端。
+输入被重定向时不等待人工认证。签到人数查询已合并为 `attendance`，旧 `check.py` 不再保留。
+全部命令、日期选择与退出码见 [CLI_USAGE.md](CLI_USAGE.md)。
 限时按键使用标准库，macOS / Linux 和 Windows 分别处理；不支持时退回普通输入选择。
 桌面端的 CustomTkinter、tkinter / Tcl/Tk 依赖保留作历史参考，本次不清理依赖，
 也不再将桌面端启动成功作为当前版本的验证要求。
@@ -69,6 +82,8 @@ PyInstaller 不属于源码运行要求；`requirements.txt` 目前未锁定具�
 - 提示缺少 `tkinter` 时，需要为当前 Python 安装对应的 Tcl/Tk 支持。
   原环境文档记录采用 Homebrew 的 `python-tk@3.14`；本轮未重新安装或验证系统包。
 
-当前没有保留自动化测试脚本；导入检查仅验证模块和依赖能否加载。
+课程日期接口、人数统计和命令解析的离线测试位于 `tests/`，可运行
+`.venv/bin/python -B -m unittest discover -s tests -p 'test_*.py'`，不读取账号文件或访问学校服务。
+导入检查仅验证模块和依赖能否加载。
 真实登录仍需网络和有效账号；是否要求验证码由学校认证系统决定。
 模拟验证不能替代真实账号的登录与查询，实际验证范围见 `CLI_ACCOUNT_LOGIN_PLAN.md`。

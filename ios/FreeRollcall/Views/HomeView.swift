@@ -150,7 +150,7 @@ private struct AttendanceDetail: View {
     }
     private func refresh() async {
         error = nil
-        do { fetched = try await state.detail(initial, allowAuthentication: false) }
+        do { fetched = try await state.detail(initial, courseID: course.id, allowAuthentication: false) }
         catch { if error as? RollcallError != .cancelled { self.error = error.localizedDescription } }
     }
 }

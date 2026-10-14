@@ -61,13 +61,22 @@ public struct Attendance: Identifiable, Hashable, Sendable {
         self.kind = Self.kind(json)
         let status = json["status"].string
         self.activityStatus = json["rollcall_status"].string ?? (Self.activityStatuses.contains(status ?? "") ? status : nil)
-        self.personalStatus = status.flatMap { Self.activityStatuses.contains($0) ? nil : $0 }
+        self.personalStatus = Self.recognizedPersonalStatus(status)
         self.isExpired = json["is_expired"].bool
         self.numberCode = json["number_code"].string
         self.endDate = Self.parseDate(json["end_time"].string)
     }
     public static let activityStatuses: Set<String> = ["active", "finished", "ended", "closed"]
-    public var isAnswered: Bool { ["on_call_fine", "on_call_late", "present", "attended", "late"].contains(personalStatus ?? "") }
+    private static let answeredStatuses: Set<String> = ["on_call", "on_call_fine", "on_call_late", "present", "attended", "late"]
+    private static let lateStatuses: Set<String> = ["on_call_late", "late"]
+    private static let generalAnsweredStatuses: Set<String> = ["on_call", "present", "attended"]
+
+    public static func recognizedPersonalStatus(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              answeredStatuses.contains(value) || value == "absent" else { return nil }
+        return value
+    }
+    public var isAnswered: Bool { Self.answeredStatuses.contains(personalStatus ?? "") }
     public var hasEnded: Bool {
         isExpired == true || ["finished", "ended", "closed"].contains(activityStatus ?? "")
             || endDate.map { $0 <= Date() } == true
@@ -80,7 +89,7 @@ public struct Attendance: Identifiable, Hashable, Sendable {
     // An unknown/missing personal status is not evidence of absence.
     public var isAbsent: Bool { hasEnded && personalStatus == "absent" }
     public var stateText: String {
-        if isAnswered { return personalStatus == "on_call_late" || personalStatus == "late" ? "已签到 · 迟到" : "已签到" }
+        if isAnswered { return Self.lateStatuses.contains(personalStatus ?? "") ? "已签到 · 迟到" : "已签到" }
         if isActive { return "正在签到" }
         if isAbsent { return "缺勤" }
         if hasEnded { return "已结束" }
@@ -92,7 +101,13 @@ public struct Attendance: Identifiable, Hashable, Sendable {
         date = other.date ?? date; rawDate = other.rawDate ?? rawDate
         if other.kind != .unknown { kind = other.kind }
         activityStatus = other.activityStatus ?? activityStatus
-        personalStatus = other.personalStatus ?? personalStatus
+        if let status = Self.recognizedPersonalStatus(other.personalStatus) {
+            // Generic attendance confirms presence without correcting a known late arrival.
+            // Explicit statuses, including absence, can still update a corrected school record.
+            if !(Self.lateStatuses.contains(personalStatus ?? "") && Self.generalAnsweredStatuses.contains(status)) {
+                personalStatus = status
+            }
+        }
         isExpired = other.isExpired ?? isExpired
         numberCode = other.numberCode ?? numberCode; endDate = other.endDate ?? endDate
     }

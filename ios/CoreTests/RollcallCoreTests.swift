@@ -131,28 +131,148 @@ final class RollcallCoreTests: XCTestCase {
         XCTAssertFalse(pages.hasMore); XCTAssertEqual(pages.items.count, 105)
         XCTAssertNotEqual(pages.note, "已全部加载")
     }
-    func testDetailReadsOnlySelectedStudentAndKeepsLeadingZeroCode() async throws {
-        let transport = StubTransport([(200, #"{"status":"active","is_number":true,"number_code":"0012","student_rollcalls":[{"student_id":8,"status":"on_call_fine"},{"student_id":9,"status":"absent"}]}"#)])
-        let record = try await TronclassClient(transport: transport).detail(id: "7", studentID: "9")
+    private var attendanceDate: Date { Attendance.parseDate("2026-10-08T00:03:17Z")! }
+    private func timetableReply(_ rows: String) -> String { "{\"rollcalls\":\(rows)}" }
+    func testTimetableUsesShanghaiDateAcrossUTCMidnightAndKeepsLeadingZeroCode() async throws {
+        let transport = StubTransport([(200, timetableReply(#"[{"id":7,"course":{"id":11},"status":"active","is_number":true,"number_code":"0012","student_rollcalls":[{"student_id":8,"status":"on_call"},{"student_id":9,"status":"absent"}]}]"#))])
+        let date = try XCTUnwrap(Attendance.parseDate("2026-10-07T16:03:17Z"))
+        let record = try await TronclassClient(transport: transport).detail(id: "7", courseID: "11", date: date, studentID: "9")
         XCTAssertEqual(record.numberCode, "0012"); XCTAssertFalse(record.isAnswered); XCTAssertTrue(record.canSubmit)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.map(\.path), ["/api/timetable_rollcalls?course_ids=11&rollcall_date=2026-10-08"])
+        XCTAssertEqual(requests.map(\.method), ["GET"])
     }
-    func testNumericSubmissionRequiresOwnVerifiedSuccess() async throws {
-        let transport = StubTransport([(200, "{}"), (200, #"{"status":"active","student_rollcalls":[{"student_id":9,"status":"on_call_fine"}]}"#)])
-        let result = try await TronclassClient(transport: transport).submitNumber(id: "7", code: "0012", studentID: "9")
+    func testDetailMatchesBothCourseAndRollcallInsteadOfFirstRow() async throws {
+        let transport = StubTransport([(200, timetableReply(#"[{"id":7,"course":{"id":12},"number_code":"9999"},{"id":8,"course":{"id":11},"number_code":"2222"},{"id":7,"course":{"id":11},"number_code":"0012","status":"finished","student_rollcalls":[{"student_id":9,"status":"on_call"}]}]"#))])
+        let record = try await TronclassClient(transport: transport).detail(id: "7", courseID: "11", date: attendanceDate, studentID: "9")
+        XCTAssertEqual(record.id, "7"); XCTAssertEqual(record.courseID, "11"); XCTAssertEqual(record.numberCode, "0012")
+        XCTAssertTrue(record.isAnswered); XCTAssertEqual(record.stateText, "已签到")
+    }
+    func testTimetableUsesRequestedCourseWhenResponseOmitsCourse() async throws {
+        let transport = StubTransport([(200, timetableReply(#"[{"id":7,"number_code":"0012","status":"finished"},{"id":8,"course_id":11,"number_code":"2345"}]"#))])
+        let rows = try await TronclassClient(transport: transport).timetable(courseID: "11", date: attendanceDate, studentID: "9")
+        XCTAssertEqual(rows.map(\.id), ["7", "8"]); XCTAssertEqual(rows.map(\.courseID), ["11", "11"])
+        XCTAssertNil(rows[0].personalStatus); XCTAssertFalse(rows[0].isAbsent)
+    }
+    func testMissingTargetNeverFallsBackToAnotherRollcallOrOldEndpoint() async throws {
+        let replies = [#"[]"#, #"[{"id":8,"course":{"id":11},"number_code":"2222"}]"#,
+                       #"[{"id":7,"course":{"id":12},"number_code":"9999"}]"#,
+                       #"[{"id":7,"course":{"id":11},"course_id":12,"number_code":"9999"}]"#]
+        for rows in replies {
+            let transport = StubTransport([(200, timetableReply(rows))])
+            do {
+                _ = try await TronclassClient(transport: transport).detail(id: "7", courseID: "11", date: attendanceDate, studentID: "9")
+                XCTFail("A missing target must be reported")
+            } catch RollcallError.message(let message) { XCTAssertTrue(message.contains("未找到")) }
+            catch { XCTFail("Unexpected error: \(error)") }
+            let requests = await transport.requests
+            XCTAssertEqual(requests.count, 1); XCTAssertTrue(requests[0].path.hasPrefix("/api/timetable_rollcalls?"))
+        }
+    }
+    func testTimetableRejectsMalformedContainersAndConflictingIdentifiers() async throws {
+        let responses = ["{}", "[]", #"{"data":{"rollcalls":[]}}"#, #"{"rollcalls":null}"#,
+                         timetableReply(#"[{"id":"7/8"}]"#), timetableReply(#"[{"id":7,"rollcall_id":8}]"#),
+                         timetableReply(#"[{"id":false,"rollcall_id":7}]"#), timetableReply(#"[{"id":7,"course":{"id":false}}]"#),
+                         timetableReply(#"[{"id":7},{"id":7}]"#), timetableReply(#"[{"id":7,"student_rollcalls":{}}]"#)]
+        for response in responses {
+            let transport = StubTransport([(200, response)])
+            do {
+                _ = try await TronclassClient(transport: transport).timetable(courseID: "11", date: attendanceDate, studentID: "9")
+                XCTFail("Malformed timetable accepted: \(response)")
+            } catch { XCTAssertEqual(error as? RollcallError, .malformedResponse) }
+        }
+    }
+    func testTimetableOnlyOwnKnownStatusCanConfirmAttendance() async throws {
+        let cases: [(String, String?)] = [
+            (#"[{"student_id":8,"status":"on_call"}]"#, nil),
+            (#"[{"student_id":9,"status":"on_call"}]"#, "on_call"),
+            (#"[{"student_id":9,"status":"active"}]"#, nil),
+            (#"[{"student_id":9,"status":"finished"}]"#, nil),
+            (#"[{"student_id":9,"status":"new_server_value"}]"#, nil),
+            (#"[{"student_id":9,"rollcall_status":"on_call_fine"}]"#, "on_call_fine"),
+            (#"[{"student_id":9,"status":"absent","rollcall_status":"on_call_fine"}]"#, "absent"),
+            (#"[{"student_id":9,"status":"","rollcall_status":"on_call"}]"#, "on_call"),
+            (#"[{"student_id":9,"status":"on_call"},{"student_id":9,"status":"on_call"}]"#, "on_call"),
+            (#"[{"student_id":9,"status":"on_call"},{"student_id":9,"status":"absent"}]"#, nil),
+            (#"[{"student_id":9,"status":"on_call"},{"student_id":9}]"#, nil)
+        ]
+        for (students, expected) in cases {
+            let response = "{\"rollcalls\":[{\"id\":7,\"status\":\"finished\",\"student_rollcalls\":\(students)}]}"
+            let transport = StubTransport([(200, response)])
+            let record = try await TronclassClient(transport: transport).detail(id: "7", courseID: "11", date: attendanceDate, studentID: "9")
+            XCTAssertEqual(record.personalStatus, expected, students)
+            XCTAssertEqual(record.isAnswered, expected == "on_call" || expected == "on_call_fine", students)
+        }
+    }
+    func testDetailWithoutOwnStatusPreservesSignedHistoryWhenMerged() async throws {
+        for status in ["on_call", "on_call_fine", "on_call_late"] {
+            var history = try Attendance(json: json("{\"rollcall_id\":7,\"status\":\"\(status)\",\"rollcall_status\":\"finished\"}"))
+            let transport = StubTransport([(200, timetableReply(#"[{"id":7,"status":"finished","number_code":"0012","student_rollcalls":[{"student_id":8,"status":"absent"}]}]"#))])
+            let detail = try await TronclassClient(transport: transport).detail(id: "7", courseID: "11", date: attendanceDate, studentID: "9")
+            history.merge(detail)
+            XCTAssertTrue(history.isAnswered); XCTAssertEqual(history.personalStatus, status)
+            XCTAssertEqual(history.numberCode, "0012")
+            XCTAssertEqual(history.stateText, status == "on_call_late" ? "已签到 · 迟到" : "已签到")
+        }
+    }
+    func testMergeIgnoresUnrecognizedPersonalStateButAllowsExplicitCorrection() throws {
+        for status: String? in [nil, "", "active", "finished", "new_server_value"] {
+            var history = try Attendance(json: json(#"{"rollcall_id":7,"status":"on_call_fine","rollcall_status":"finished"}"#))
+            var detail = try Attendance(json: json(#"{"id":7,"status":"finished"}"#))
+            detail.personalStatus = status
+            history.merge(detail)
+            XCTAssertEqual(history.stateText, "已签到")
+        }
+        var history = try Attendance(json: json(#"{"rollcall_id":7,"status":"on_call_fine","rollcall_status":"finished"}"#))
+        history.merge(try Attendance(json: json(#"{"id":7,"status":"absent","rollcall_status":"finished"}"#)))
+        XCTAssertEqual(history.stateText, "缺勤")
+    }
+    func testGenericAttendanceDoesNotEraseKnownLateness() throws {
+        for status in ["on_call", "present", "attended"] {
+            var history = try Attendance(json: json(#"{"rollcall_id":7,"status":"on_call_late","rollcall_status":"finished"}"#))
+            history.merge(try Attendance(json: json("{\"id\":7,\"status\":\"\(status)\"}")))
+            XCTAssertEqual(history.stateText, "已签到 · 迟到")
+            history.merge(try Attendance(json: json(#"{"id":7,"status":"on_call_fine"}"#)))
+            XCTAssertEqual(history.stateText, "已签到")
+        }
+    }
+    func testNumericSubmissionRequiresOwnVerifiedSuccessUsingNewEndpoint() async throws {
+        let transport = StubTransport([(200, "{}"), (200, timetableReply(#"[{"id":7,"course":{"id":11},"status":"active","student_rollcalls":[{"student_id":9,"status":"on_call"}]}]"#))])
+        let result = try await TronclassClient(transport: transport).submitNumber(id: "7", code: "0012", courseID: "11", date: attendanceDate, studentID: "9")
         XCTAssertTrue(result.isAnswered)
         let requests = await transport.requests
         XCTAssertEqual(requests.map(\.method), ["PUT", "GET"])
+        XCTAssertEqual(requests.map(\.path), ["/api/rollcall/7/answer_number_rollcall", "/api/timetable_rollcalls?course_ids=11&rollcall_date=2026-10-08"])
         XCTAssertEqual(requests[0].body?["numberCode"].string, "0012")
         XCTAssertNotNil(UUID(uuidString: requests[0].body?["deviceId"].string ?? ""))
     }
     func testUnconfirmedNumericWriteIsNotRetried() async throws {
-        let transport = StubTransport([(200, "{}"), (200, #"{"student_rollcalls":[{"student_id":8,"status":"on_call_fine"},{"student_id":9,"status":"absent"}]}"#)])
-        do {
-            _ = try await TronclassClient(transport: transport).submitNumber(id: "7", code: "0000", studentID: "9")
-            XCTFail("must remain uncertain")
-        } catch RollcallError.uncertain {} catch { XCTFail("unexpected \(error)") }
-        let requests = await transport.requests
-        XCTAssertEqual(requests.filter { $0.method == "PUT" }.count, 1)
+        for rows in [#"[{"id":7,"student_rollcalls":[{"student_id":8,"status":"on_call"},{"student_id":9,"status":"absent"}]}]"#,
+                     #"[{"id":7,"student_rollcalls":[{"student_id":8,"status":"on_call"}]}]"#, #"[]"#] {
+            let transport = StubTransport([(200, "{}"), (200, timetableReply(rows))])
+            do {
+                _ = try await TronclassClient(transport: transport).submitNumber(id: "7", code: "0000", courseID: "11", date: attendanceDate, studentID: "9")
+                XCTFail("must remain uncertain")
+            } catch RollcallError.uncertain {} catch { XCTFail("unexpected \(error)") }
+            let requests = await transport.requests
+            XCTAssertEqual(requests.filter { $0.method == "PUT" }.count, 1)
+            XCTAssertEqual(requests.filter { $0.method == "GET" }.map(\.path), ["/api/timetable_rollcalls?course_ids=11&rollcall_date=2026-10-08"])
+        }
+    }
+    func testInvalidSubmissionContextNeverWrites() async throws {
+        let cases: [(String, String, String, String, Date)] = [
+            ("7/8", "0012", "11", "9", attendanceDate), ("7", "0012", "11&extra=1", "9", attendanceDate),
+            ("7", "0012", "11", "", attendanceDate), ("7", "", "11", "9", attendanceDate),
+            ("7", "0012", "11", "9", Date(timeIntervalSinceReferenceDate: .nan))
+        ]
+        for (id, code, course, student, date) in cases {
+            let transport = StubTransport([])
+            do {
+                _ = try await TronclassClient(transport: transport).submitNumber(id: id, code: code, courseID: course, date: date, studentID: student)
+                XCTFail("Invalid context must be rejected before PUT")
+            } catch {}
+            let requests = await transport.requests; XCTAssertTrue(requests.isEmpty)
+        }
     }
     func testExpiredSessionAndHTMLLoginAreRecognized() async throws {
         for reply in [(302, ""), (401, "{}"), (200, "<!DOCTYPE html><html>Login</html>")] {

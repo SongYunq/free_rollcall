@@ -40,6 +40,8 @@ enum LogResult: String { case processing, success, failure, uncertain
     var courseID: String
     var courseName: String
     var rollcallID: String
+    // Optional so existing logs remain readable; older logs resolve this from history when checked.
+    var rollcallDate: Date?
     var kindRaw: String
     var code: String?
     var resultRaw: String
@@ -48,6 +50,7 @@ enum LogResult: String { case processing, success, failure, uncertain
         id = UUID(); createdAt = Date(); accountID = account.id
         username = account.username; accountNote = account.note; self.studentID = studentID
         courseID = course.id; courseName = course.name; rollcallID = record.id
+        rollcallDate = record.date
         kindRaw = record.kind.rawValue; code = record.numberCode
         resultRaw = LogResult.processing.rawValue; message = "正在准备签到"
     }

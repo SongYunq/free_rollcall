@@ -8,10 +8,10 @@ import RollcallCore
         let first = try store.saveAccount(id: nil, username: "demo001", password: "example-only", note: "常用账号")
         _ = try store.saveAccount(id: nil, username: "demo002", password: "example-only", note: "备用账号")
         let course = Course(id: "101", name: "软件工程与实践")
-        let record = try Attendance(json: JSONValue.decode(Data(#"{"rollcall_id":701,"is_number":true,"number_code":"0123"}"#.utf8)))
+        let record = try Attendance(json: JSONValue.decode(Data(#"{"rollcall_id":701,"course_id":101,"rollcall_time":"2026-10-08T00:03:17Z","is_number":true,"number_code":"0123"}"#.utf8)))
         let log = try store.begin(account: first, studentID: "90001", course: course, record: record)
         try store.update(log, result: .success, message: "签到成功")
-        let radar = try Attendance(json: JSONValue.decode(Data(#"{"rollcall_id":702,"is_radar":true}"#.utf8)))
+        let radar = try Attendance(json: JSONValue.decode(Data(#"{"rollcall_id":702,"course_id":102,"rollcall_time":"2026-10-08T00:03:17Z","is_radar":true}"#.utf8)))
         let other = try store.begin(account: first, studentID: "90001", course: Course(id: "102", name: "大学英语综合教程"), record: radar)
         try store.update(other, result: .uncertain, message: "提交连接中断，结果待确认，请先核对签到状态")
         authentication = { id, username, _, _ in
@@ -43,26 +43,40 @@ private actor FixtureTransport: HTTPTransport {
             ]), "pages": .number(1), "total": .number(3)])
         } else if request.path == "/api/radar/rollcalls" { body = .object(["rollcalls": .array([])]) }
         else if request.path.contains("/student/") {
+            let courseID = String(request.path.split(separator: "/")[2])
             body = .object(["rollcalls": .array([
-                record("701", radar: false, active: true, includeCode: false), record("702", radar: true, active: true),
-                record("703", radar: false, active: false, includeCode: false),
-                record("704", radar: false, active: false, includeCode: false)
-            ])])
-        } else if request.path.contains("/student_rollcalls") {
-            let id = String(request.path.split(separator: "/")[2])
-            let active = id == "701" || id == "702"
-            var fields = record(id, radar: id == "702", active: active).object!
-            fields["status"] = .string(active ? "active" : "finished")
-            fields["student_rollcalls"] = .array([.object(["student_id": .string(studentID), "status": .string(answered.contains(id) || id == "703" ? "on_call_fine" : "absent")])])
-            body = .object(fields)
+                record("701", courseID: courseID, radar: false, active: true, includeCode: false),
+                record("702", courseID: courseID, radar: true, active: true),
+                record("703", courseID: courseID, radar: false, active: false, includeCode: false),
+                record("704", courseID: courseID, radar: false, active: false, includeCode: false)
+            ]), "pages": .number(1)])
+        } else if request.path.hasPrefix("/api/timetable_rollcalls?") {
+            let query = URLComponents(string: request.path)?.queryItems ?? []
+            guard let courseID = query.first(where: { $0.name == "course_ids" })?.value,
+                  query.first(where: { $0.name == "rollcall_date" })?.value == "2026-10-08" else {
+                throw RollcallError.message("演示查询缺少正确的课程或签到日期")
+            }
+            body = .object(["rollcalls": .array(["701", "702", "703", "704"].map { id in
+                let active = id == "701" || id == "702"
+                var fields = record(id, courseID: courseID, radar: id == "702", active: active).object!
+                fields.removeValue(forKey: "rollcall_id")
+                fields["id"] = .string(id)
+                fields["course"] = .object(["id": .string(courseID), "name": .string("软件工程与实践")])
+                fields["status"] = .string(active ? "active" : "finished")
+                fields["student_rollcalls"] = .array([.object([
+                    "student_id": .string(studentID),
+                    "status": .string(answered.contains(id) || id == "703" ? "on_call" : "absent")
+                ])])
+                return .object(fields)
+            })])
         } else { throw RollcallError.message("演示数据未提供此操作") }
         return APIResponse(status: 200, data: try body.encoded())
     }
-    private func record(_ id: String, radar: Bool, active: Bool, includeCode: Bool = true) -> JSONValue {
-        .object(["rollcall_id": .string(id), "is_number": .bool(!radar), "is_radar": .bool(radar),
+    private func record(_ id: String, courseID: String, radar: Bool, active: Bool, includeCode: Bool = true) -> JSONValue {
+        .object(["rollcall_id": .string(id), "course_id": .string(courseID), "is_number": .bool(!radar), "is_radar": .bool(radar),
                  "is_expired": .bool(!active), "rollcall_status": .string(active ? "active" : "finished"),
                  "status": .string(answered.contains(id) || id == "703" ? "on_call_fine" : "absent"),
-                 "number_code": radar || !includeCode ? .null : .string("0123"), "rollcall_time": .string("2026-09-20T08:30:00+08:00")])
+                 "number_code": radar || !includeCode ? .null : .string("0123"), "rollcall_time": .string("2026-10-08T00:03:17Z")])
     }
 }
 #endif

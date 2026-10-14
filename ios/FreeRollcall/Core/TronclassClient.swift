@@ -125,20 +125,61 @@ public final class TronclassClient: Sendable {
         guard let rows = json["rollcalls"].array ?? json.array else { throw RollcallError.malformedResponse }
         return try rows.map(Attendance.init(json:))
     }
-    public func detail(id: String, studentID: String) async throws -> Attendance {
+    public func timetable(courseID: String, date: Date, studentID: String) async throws -> [Attendance] {
+        let path = try timetablePath(courseID: courseID, date: date, studentID: studentID)
+        let json = try await read(APIRequest(path))
+        guard let rows = json["rollcalls"].array else { throw RollcallError.malformedResponse }
+        var records: [Attendance] = []
+        var ids: Set<String> = []
+        for row in rows {
+            guard row.object != nil else { throw RollcallError.malformedResponse }
+            // The endpoint can contain multiple rollcalls: never take the first entry as the target.
+            // Missing course information is scoped by the request; an explicit other course is excluded.
+            let courseIDs = [row["course"]["id"], row["course_id"]].filter { $0 != .null }
+            for value in courseIDs {
+                guard let id = value.string else { throw RollcallError.malformedResponse }
+                try validateID(id)
+            }
+            if courseIDs.contains(where: { $0.string != courseID }) { continue }
+            let identifier = row["id"] != .null ? row["id"] : row["rollcall_id"]
+            guard let id = identifier.string else { throw RollcallError.malformedResponse }
+            try validateID(id)
+            if row["rollcall_id"] != .null && row["rollcall_id"].string != id { throw RollcallError.malformedResponse }
+            guard ids.insert(id).inserted else { throw RollcallError.malformedResponse }
+            var record = try Attendance(json: row)
+            record.courseID = courseID
+            // Top-level status describes the activity. Personal status comes only from the matching student.
+            if row["student_rollcalls"] != .null && row["student_rollcalls"].array == nil {
+                throw RollcallError.malformedResponse
+            }
+            let ownRows = row["student_rollcalls"].array?.filter { $0["student_id"].string == studentID } ?? []
+            let ownStatuses = ownRows.map {
+                Attendance.recognizedPersonalStatus($0["status"].string)
+                    ?? Attendance.recognizedPersonalStatus($0["rollcall_status"].string)
+            }
+            // Conflicting duplicate rows cannot prove the current student's attendance.
+            if let first = ownStatuses.first, ownStatuses.allSatisfy({ $0 == first }) {
+                record.personalStatus = first
+            } else {
+                record.personalStatus = nil
+            }
+            records.append(record)
+        }
+        return records
+    }
+    public func detail(id: String, courseID: String, date: Date, studentID: String) async throws -> Attendance {
         try validateID(id)
-        let json = try await read(APIRequest("/api/rollcall/\(id)/student_rollcalls"))
-        guard var fields = json.object else { throw RollcallError.malformedResponse }
-        fields["rollcall_id"] = .string(id)
-        var record = try Attendance(json: .object(fields))
-        // This endpoint includes the whole class: only inspect the current student's row.
-        if let own = json["student_rollcalls"].array?.first(where: { $0["student_id"].string == studentID }) {
-            record.personalStatus = own["status"].string
+        guard let record = try await timetable(courseID: courseID, date: date, studentID: studentID)
+            .first(where: { $0.id == id }) else {
+            throw RollcallError.message("未找到对应签到记录，请刷新课程签到列表后重试")
         }
         return record
     }
-    public func submitNumber(id: String, code: String, studentID: String) async throws -> Attendance {
+    public func submitNumber(id: String, code: String, courseID: String, date: Date, studentID: String) async throws -> Attendance {
         try validateID(id)
+        // Validate all read-back context before writing, so a missing/invalid date or identity cannot submit blindly.
+        _ = try timetablePath(courseID: courseID, date: date, studentID: studentID)
+        guard !code.isEmpty else { throw RollcallError.message("未获取到签到码，请刷新后重试") }
         let response = try await transport.send(APIRequest("/api/rollcall/\(id)/answer_number_rollcall", method: "PUT", body: .object([
             "deviceId": .string(UUID().uuidString.lowercased()), "numberCode": .string(code)
         ])))
@@ -149,7 +190,7 @@ public final class TronclassClient: Sendable {
             throw RollcallError.message("学校未接受本次签到，请刷新后重试")
         }
         do {
-            let record = try await detail(id: id, studentID: studentID)
+            let record = try await detail(id: id, courseID: courseID, date: date, studentID: studentID)
             guard record.isAnswered else { throw RollcallError.uncertain("已提交，尚未确认本人签到状态，请稍后核对") }
             return record
         } catch { throw RollcallError.uncertain("已提交，结果待确认，请稍后核对签到状态") }
@@ -157,6 +198,18 @@ public final class TronclassClient: Sendable {
     public func submitRadar(id: String) async throws -> Bool {
         try validateID(id)
         return try await RadarSubmission.run(transport: transport, id: id)
+    }
+    private func timetablePath(courseID: String, date: Date, studentID: String) throws -> String {
+        try validateID(courseID); try validateID(studentID)
+        guard date.timeIntervalSinceReferenceDate.isFinite else { throw RollcallError.malformedResponse }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)
+        formatter.dateFormat = "yyyy-MM-dd"
+        let day = formatter.string(from: date)
+        guard day.count == 10 else { throw RollcallError.malformedResponse }
+        return "/api/timetable_rollcalls?course_ids=\(courseID)&rollcall_date=\(day)"
     }
     private func validateID(_ id: String) throws {
         guard !id.isEmpty, id.allSatisfy({ $0.isASCII && $0.isNumber }) else { throw RollcallError.malformedResponse }

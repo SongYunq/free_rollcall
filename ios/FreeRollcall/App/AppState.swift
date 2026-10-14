@@ -164,7 +164,7 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
         if changedCourse {
             historyPage = PageAccumulator(); records = []; detailEpoch = UUID()
         }
-        if reset || changedCourse { operationMessage = nil }
+        if reset || changedCourse { operationMessage = nil; detailEpoch = UUID() }
         historyCourseID = course.id
         let page = reset ? 1 : historyPage.nextPage
         do {
@@ -174,7 +174,12 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
             if reset { historyPage = PageAccumulator() }
             historyPage.append(data)
             // Loading older pages must retain already fetched codes and freshly confirmed results.
-            records = historyPage.items.map { reset ? $0 : visible[$0.id] ?? $0 }
+            records = historyPage.items.map {
+                var record = reset ? $0 : visible[$0.id] ?? $0
+                record.courseID = record.courseID ?? course.id
+                record.courseName = record.courseName ?? course.name
+                return record
+            }
             // Active endpoint may include activities not yet visible in history. Only merge a proven course match.
             do {
                 let active = try await read { try await $0.client.active() }
@@ -192,12 +197,28 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
             // Fetch codes without replacing the history endpoint's personal/activity status.
             let missing = records.filter { ($0.kind == .number && $0.numberCode?.isEmpty != false) || $0.kind == .unknown }
             var incomplete = false
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
+            var groups: [(date: Date, records: [Attendance])] = []
             for record in missing {
+                guard let date = record.date else { incomplete = true; continue }
+                let day = calendar.startOfDay(for: date)
+                if let index = groups.firstIndex(where: { $0.date == day }) { groups[index].records.append(record) }
+                else { groups.append((day, [record])) }
+            }
+            // One course/date request provides all codes for that day, without replacing history status.
+            for group in groups {
                 guard token == historyRequest, !Task.isCancelled else { return }
                 do {
-                    let detail = try await read { try await $0.client.detail(id: record.id, studentID: $0.profile.id) }
+                    let details = try await read {
+                        try await $0.client.timetable(courseID: course.id, date: group.date, studentID: $0.profile.id)
+                    }
                     guard token == historyRequest, !Task.isCancelled else { return }
-                    if let index = records.firstIndex(where: { $0.id == record.id }) {
+                    for record in group.records {
+                        guard let detail = details.first(where: { $0.id == record.id }),
+                              let index = records.firstIndex(where: { $0.id == record.id }) else {
+                            incomplete = true; continue
+                        }
                         records[index].numberCode = detail.numberCode ?? records[index].numberCode
                         if records[index].kind == .unknown { records[index].kind = detail.kind }
                         if records[index].kind == .number && records[index].numberCode?.isEmpty != false { incomplete = true }
@@ -213,16 +234,38 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
             }
         } catch { if token == historyRequest { historyError = error.localizedDescription } }
     }
-    func detail(_ record: Attendance, allowAuthentication: Bool = true) async throws -> Attendance {
+    private func queryDate(id: String, courseID: String, knownDate: Date?, current: AuthenticatedSession) async throws -> Date {
+        if let knownDate { return knownDate }
+        // Earlier logs did not store the activity date. Resolve its ID through history, never today's date.
+        var history = PageAccumulator<Attendance>()
+        repeat {
+            try Task.checkCancellation()
+            let page = try await current.client.history(courseID: courseID, studentID: current.profile.id, page: history.nextPage)
+            guard session?.generation == current.generation else { throw RollcallError.cancelled }
+            if let record = page.items.first(where: { $0.id == id }) {
+                guard let date = record.date else { throw RollcallError.message("学校未提供本次签到的日期，无法查询详情") }
+                return date
+            }
+            history.append(page)
+        } while history.hasMore && history.nextPage <= 100
+        throw RollcallError.message("未能找到本次签到的原始日期，无法查询详情，请刷新课程记录后重试")
+    }
+    private func queryDetail(_ record: Attendance, courseID: String?, current: AuthenticatedSession) async throws -> Attendance {
+        guard let courseID = record.courseID ?? courseID else { throw RollcallError.message("缺少课程信息，请从课程列表重新打开签到") }
+        let date = try await queryDate(id: record.id, courseID: courseID, knownDate: record.date, current: current)
+        return try await current.client.detail(id: record.id, courseID: courseID, date: date, studentID: current.profile.id)
+    }
+    func detail(_ record: Attendance, courseID: String? = nil, allowAuthentication: Bool = true) async throws -> Attendance {
         guard !isSubmitting, !preparingSubmission else { throw RollcallError.cancelled }
         let epoch = detailEpoch
+        let courseID = courseID ?? historyCourseID
         let detail: Attendance
         if allowAuthentication {
-            detail = try await read { try await $0.client.detail(id: record.id, studentID: $0.profile.id) }
+            detail = try await read { try await queryDetail(record, courseID: courseID, current: $0) }
         } else {
             guard let current = session else { throw RollcallError.expiredSession }
             do {
-                detail = try await current.client.detail(id: record.id, studentID: current.profile.id)
+                detail = try await queryDetail(record, courseID: courseID, current: current)
                 guard session?.generation == current.generation else { throw RollcallError.cancelled }
             } catch {
                 if error as? RollcallError == .expiredSession, session?.generation == current.generation { session = nil }
@@ -230,7 +273,8 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
             }
         }
         guard epoch == detailEpoch else { throw RollcallError.cancelled }
-        var combined = record; combined.merge(detail)
+        var combined = records.first(where: { $0.id == record.id }) ?? record
+        combined.merge(detail)
         if let i = records.firstIndex(where: { $0.id == record.id }) { records[i] = combined }
         return combined
     }
@@ -254,8 +298,10 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
             let current = try await ensureSession()
             isSubmitting = true
             log.studentID = current.profile.id
-            var fresh = record
-            fresh.merge(try await current.client.detail(id: record.id, studentID: current.profile.id))
+            let activityDate = try await queryDate(id: record.id, courseID: course.id, knownDate: record.date, current: current)
+            log.rollcallDate = activityDate
+            var fresh = records.first(where: { $0.id == record.id }) ?? record
+            fresh.merge(try await current.client.detail(id: record.id, courseID: course.id, date: activityDate, studentID: current.profile.id))
             if let i = records.firstIndex(where: { $0.id == record.id }) { records[i] = fresh }
             if fresh.isAnswered {
                 try store.update(log, result: .success, message: "该账号已签到，本次未重复提交", code: fresh.numberCode, kind: fresh.kind)
@@ -268,7 +314,7 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
             switch fresh.kind {
             case .number:
                 guard let code = fresh.numberCode, !code.isEmpty else { throw RollcallError.message("未能取得数字签到码") }
-                let result = try await current.client.submitNumber(id: fresh.id, code: code, studentID: current.profile.id)
+                let result = try await current.client.submitNumber(id: fresh.id, code: code, courseID: course.id, date: activityDate, studentID: current.profile.id)
                 fresh.merge(result)
             case .radar:
                 guard try await current.client.submitRadar(id: fresh.id) else { throw RollcallError.message("雷达签到未完成，请稍后重试") }
@@ -295,10 +341,12 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
         }
         do {
             guard current.profile.id == log.studentID else { throw RollcallError.identityMismatch }
-            let detail = try await current.client.detail(id: log.rollcallID, studentID: log.studentID)
+            let date = try await queryDate(id: log.rollcallID, courseID: log.courseID, knownDate: log.rollcallDate, current: current)
+            let detail = try await current.client.detail(id: log.rollcallID, courseID: log.courseID, date: date, studentID: log.studentID)
             guard session?.generation == current.generation else { throw RollcallError.cancelled }
+            log.rollcallDate = date
             if detail.isAnswered { try store.update(log, result: .success, message: "已核对：学校记录显示已签到") }
-            else if !detail.isActive && detail.activityStatus == "finished" {
+            else if detail.isAbsent {
                 try store.update(log, result: .failure, message: "签到已结束，未查到本人签到成功记录")
             } else { try store.update(log, result: .uncertain, message: "暂未确认签到成功，可稍后再次核对") }
         } catch {

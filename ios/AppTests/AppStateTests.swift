@@ -3,20 +3,39 @@ import UIKit
 import RollcallCore
 @testable import FreeRollcall
 
+private let sampleRollcallTime = "2026-10-08T00:03:17Z"
+private let sampleTimetablePath = "/api/timetable_rollcalls?course_ids=1&rollcall_date=2026-10-08"
+
+private func timetableBody(id: String = "7", date: String = sampleRollcallTime, status: String? = "absent",
+                           activity: String = "finished", code: String = "0012", courseID: String = "1") -> String {
+    var students: [[String: String]] = [["student_id": "999", "status": "on_call"]]
+    if let status { students.append(["student_id": "9", "status": status]) }
+    let row: [String: Any] = [
+        "id": id, "course": ["id": courseID, "name": "Test"], "is_number": true,
+        "number_code": code, "status": activity, "rollcall_time": date, "student_rollcalls": students
+    ]
+    return String(data: try! JSONSerialization.data(withJSONObject: ["rollcalls": [row]]), encoding: .utf8)!
+}
+
 actor StateTransport: HTTPTransport {
     var writes = 0
     var expired = false
     var answered = false
     var delay: UInt64 = 0
+    private(set) var requests: [APIRequest] = []
     func configure(expired: Bool = false, delay: UInt64 = 0) { self.expired = expired; self.delay = delay }
     func send(_ request: APIRequest) async throws -> APIResponse {
+        requests.append(request)
         if delay > 0 { try await Task.sleep(nanoseconds: delay) }
         if expired { return APIResponse(status: 401, data: Data()) }
         let json: String
-        if request.method == "PUT" { writes += 1; answered = true; json = "{}" }
-        else if request.path == "/api/current-semester-info" { json = #"{"semester":{"id":7},"academic_year":{"id":2026}}"# }
+        if request.method == "PUT", request.path == "/api/rollcall/7/answer_number_rollcall" {
+            writes += 1; answered = true; json = "{}"
+        } else if request.path == "/api/current-semester-info" { json = #"{"semester":{"id":7},"academic_year":{"id":2026}}"# }
         else if request.path == "/api/my-courses" { json = #"{"courses":[{"id":1,"name":"Test"}],"pages":1}"# }
-        else { json = "{\"status\":\"active\",\"is_number\":true,\"number_code\":\"0012\",\"student_rollcalls\":[{\"student_id\":\"9\",\"status\":\"\(answered ? "on_call_fine" : "absent")\"}]}" }
+        else if request.path == sampleTimetablePath {
+            json = timetableBody(status: answered ? "on_call" : "absent", activity: "active")
+        } else { throw RollcallError.message("Unexpected request: \(request.path)") }
         return APIResponse(status: 200, data: Data(json.utf8))
     }
 }
@@ -27,6 +46,7 @@ actor SequenceTransport: HTTPTransport {
     init(_ replies: [(Int, String)]) { self.replies = replies.map { APIResponse(status: $0.0, data: Data($0.1.utf8)) } }
     func send(_ request: APIRequest) async throws -> APIResponse {
         requests.append(request)
+        guard !request.path.contains("/student_rollcalls") else { throw RollcallError.message("Legacy detail endpoint must not be used") }
         guard !replies.isEmpty else { throw RollcallError.message("Unexpected request") }
         return replies.removeFirst()
     }
@@ -109,7 +129,7 @@ actor SequenceTransport: HTTPTransport {
             try await Task.sleep(nanoseconds: 30_000_000)
             return try self.makeSession(id, username: username, transport: transport)
         }
-        let record = try Attendance(json: .object(["rollcall_id": .string("7"), "is_number": .bool(true), "status": .string("active")]))
+        let record = try Attendance(json: .object(["rollcall_id": .string("7"), "course_id": .string("1"), "rollcall_time": .string(sampleRollcallTime), "is_number": .bool(true), "status": .string("active")]))
         let course = Course(id: "1", name: "Test")
         async let first: Void = state.submit(record, course: course)
         async let second: Void = state.submit(record, course: course)
@@ -117,12 +137,16 @@ actor SequenceTransport: HTTPTransport {
         let writes = await transport.writes
         XCTAssertEqual(writes, 1); XCTAssertEqual(store.logs.count, 1); XCTAssertEqual(store.logs.first?.result, .success)
         XCTAssertEqual(store.logs.first?.code, "0012")
+        XCTAssertEqual(store.logs.first?.rollcallDate, Attendance.parseDate(sampleRollcallTime))
+        let requests = await transport.requests
+        XCTAssertEqual(requests.map(\.path), [sampleTimetablePath, "/api/rollcall/7/answer_number_rollcall", sampleTimetablePath])
+        XCTAssertEqual(requests.map(\.method), ["GET", "PUT", "GET"])
     }
     func testDeletingDefaultDoesNotChooseReplacementOrDeleteLogs() async throws {
         let store = try LocalStore(inMemory: true)
         let a = try store.saveAccount(id: nil, username: "a", password: "a", note: "Old label")
         _ = try store.saveAccount(id: nil, username: "b", password: "b", note: "")
-        let record = try Attendance(json: .object(["rollcall_id": .string("7"), "is_radar": .bool(true)]))
+        let record = try Attendance(json: .object(["rollcall_id": .string("7"), "course_id": .string("1"), "rollcall_time": .string(sampleRollcallTime), "is_radar": .bool(true)]))
         let log = try store.begin(account: a, studentID: "9", course: Course(id: "1", name: "Test"), record: record)
         try store.update(log, result: .success, message: "签到成功")
         try store.delete(a)
@@ -169,12 +193,13 @@ actor SequenceTransport: HTTPTransport {
         let store = try LocalStore(inMemory: true)
         let account = try store.saveAccount(id: nil, username: "a", password: "a", note: "")
         let transport = SequenceTransport([
-            (200, #"{"rollcalls":[{"rollcall_id":7,"is_number":true,"is_expired":false,"status":"absent"}]}"#),
+            (200, #"{"rollcalls":[{"rollcall_id":7,"is_number":true,"is_expired":false,"status":"absent","rollcall_time":"2026-10-08T00:03:17Z"}]}"#),
             (200, #"{"rollcalls":[]}"#),
-            (200, #"{"status":"active","is_number":true,"number_code":"0012"}"#),
-            (200, #"{"status":"active","is_number":true,"number_code":"0012","student_rollcalls":[{"student_id":9,"status":"on_call_fine"}]}"#),
-            (200, #"{"rollcalls":[{"rollcall_id":8,"is_number":true,"rollcall_status":"finished"}]}"#),
-            (200, #"{"rollcalls":[]}"#), (200, #"{"number_code":"0034"}"#)
+            (200, timetableBody(activity: "active")),
+            (200, timetableBody(status: "on_call", activity: "active")),
+            (200, #"{"rollcalls":[{"rollcall_id":8,"is_number":true,"rollcall_status":"finished","rollcall_time":"2026-10-07T00:03:17Z"}]}"#),
+            (200, #"{"rollcalls":[]}"#),
+            (200, timetableBody(id: "8", date: "2026-10-07T00:03:17Z", code: "0034"))
         ])
         let state = AppState(store: store)
         state.authentication = { id, username, _, _ in try self.makeSession(id, username: username, transport: transport) }
@@ -189,14 +214,21 @@ actor SequenceTransport: HTTPTransport {
         XCTAssertEqual(state.records.count, 2)
         XCTAssertEqual(state.records.first(where: { $0.id == "8" })?.numberCode, "0034")
         XCTAssertNil(state.historyError)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.filter { $0.path.hasPrefix("/api/timetable_rollcalls?") }.map(\.path), [
+            sampleTimetablePath, sampleTimetablePath,
+            "/api/timetable_rollcalls?course_ids=1&rollcall_date=2026-10-07"
+        ])
     }
     func testAutomaticCodesPreserveEveryExistingAttendanceState() async throws {
         let store = try LocalStore(inMemory: true)
         let account = try store.saveAccount(id: nil, username: "a", password: "a", note: "")
         let history = #"{"rollcalls":[{"rollcall_id":7,"is_number":true,"rollcall_status":"finished","status":"on_call_fine","rollcall_time":"2026-09-20T08:00:00Z"},{"rollcall_id":8,"is_number":true,"rollcall_status":"finished","status":"on_call_late","rollcall_time":"2026-09-19T08:00:00Z"},{"rollcall_id":9,"is_number":true,"rollcall_status":"finished","rollcall_time":"2026-09-18T08:00:00Z"},{"rollcall_id":10,"is_number":true,"rollcall_status":"finished","status":"absent","rollcall_time":"2026-09-17T08:00:00Z"}]}"#
-        // The code endpoint's statuses must not replace the history row's own status.
-        let conflictingDetail = #"{"number_code":"0012","status":"active","student_rollcalls":[{"student_id":9,"status":"absent"}]}"#
-        let transport = SequenceTransport([(200, history), (200, #"{"rollcalls":[]}"#)] + Array(repeating: (200, conflictingDetail), count: 4))
+        // Automatic code enrichment must not replace personal/activity states from history.
+        let details = zip(["7", "8", "9", "10"], ["20", "19", "18", "17"]).map { id, day in
+            (200, timetableBody(id: id, date: "2026-09-\(day)T08:00:00Z", status: "absent", activity: "active"))
+        }
+        let transport = SequenceTransport([(200, history), (200, #"{"rollcalls":[]}"#)] + details)
         let state = AppState(store: store)
         state.authentication = { id, username, _, _ in try self.makeSession(id, username: username, transport: transport) }
         _ = try await state.login(account.id)
@@ -212,10 +244,11 @@ actor SequenceTransport: HTTPTransport {
         let store = try LocalStore(inMemory: true)
         let account = try store.saveAccount(id: nil, username: "a", password: "a", note: "")
         let history = #"{"rollcalls":[{"rollcall_id":7,"is_number":true,"status":"on_call_fine","rollcall_status":"finished","rollcall_time":"2026-09-20T08:00:00Z"},{"rollcall_id":8,"is_number":true,"status":"absent","rollcall_status":"finished","rollcall_time":"2026-09-19T08:00:00Z"}]}"#
-        let code = #"{"number_code":"0034","status":"finished"}"#
+        let firstCode = timetableBody(date: "2026-09-20T08:00:00Z", status: nil, code: "0034")
+        let secondCode = timetableBody(id: "8", date: "2026-09-19T08:00:00Z", status: nil, code: "0034")
         let transport = SequenceTransport([
-            (200, history), (200, #"{"rollcalls":[]}"#), (500, "{}"), (200, code),
-            (200, history), (200, #"{"rollcalls":[]}"#), (200, code), (200, code)
+            (200, history), (200, #"{"rollcalls":[]}"#), (500, "{}"), (200, secondCode),
+            (200, history), (200, #"{"rollcalls":[]}"#), (200, firstCode), (200, secondCode)
         ])
         let state = AppState(store: store)
         state.authentication = { id, username, _, _ in try self.makeSession(id, username: username, transport: transport) }
@@ -233,8 +266,8 @@ actor SequenceTransport: HTTPTransport {
         let store = try LocalStore(inMemory: true)
         let account = try store.saveAccount(id: nil, username: "a", password: "a", note: "")
         let transport = SequenceTransport([
-            (200, #"{"rollcalls":[{"rollcall_id":7,"rollcall_status":"finished"}]}"#),
-            (200, #"{"rollcalls":[]}"#), (200, #"{"is_number":true,"number_code":"0012"}"#), (500, "{}"), (500, "{}")
+            (200, #"{"rollcalls":[{"rollcall_id":7,"rollcall_status":"finished","rollcall_time":"2026-10-08T00:03:17Z"}]}"#),
+            (200, #"{"rollcalls":[]}"#), (200, timetableBody()), (500, "{}"), (500, "{}")
         ])
         let state = AppState(store: store)
         state.authentication = { id, username, _, _ in try self.makeSession(id, username: username, transport: transport) }
@@ -246,6 +279,123 @@ actor SequenceTransport: HTTPTransport {
         state.operationMessage = "旧课程的结果"
         await state.loadHistory(course: Course(id: "2", name: "Second"), reset: true)
         XCTAssertTrue(state.records.isEmpty); XCTAssertNil(state.operationMessage)
+    }
+    func testOpeningAnsweredDetailKeepsOnCallAndUnknownStatusesAnswered() async throws {
+        let store = try LocalStore(inMemory: true)
+        let account = try store.saveAccount(id: nil, username: "a", password: "a", note: "")
+        let transport = SequenceTransport([
+            (200, timetableBody(status: "on_call")),
+            (200, timetableBody(status: nil)),
+            (200, timetableBody(status: "new_unknown_school_status"))
+        ])
+        let state = AppState(store: store)
+        state.authentication = { id, username, _, _ in try self.makeSession(id, username: username, transport: transport) }
+        _ = try await state.login(account.id)
+        let record = try Attendance(json: .object([
+            "id": .string("7"), "status": .string("on_call_fine"), "rollcall_status": .string("finished"),
+            "rollcall_time": .string(sampleRollcallTime), "is_number": .bool(true)
+        ]))
+        state.historyCourseID = "1"; state.records = [record]
+        for _ in 0..<3 {
+            let detail = try await state.detail(record, allowAuthentication: false)
+            XCTAssertEqual(detail.stateText, "已签到")
+            XCTAssertEqual(state.records.first?.stateText, "已签到")
+            XCTAssertEqual(state.records.first?.numberCode, "0012")
+        }
+        let requests = await transport.requests
+        XCTAssertEqual(requests.map(\.path), Array(repeating: sampleTimetablePath, count: 3))
+    }
+    func testSameBeijingDayHydratesMultipleCodesWithOneRequest() async throws {
+        let store = try LocalStore(inMemory: true)
+        let account = try store.saveAccount(id: nil, username: "a", password: "a", note: "")
+        let history = #"{"rollcalls":[{"rollcall_id":7,"is_number":true,"status":"on_call_fine","rollcall_status":"finished","rollcall_time":"2026-10-07T16:30:00Z"},{"rollcall_id":8,"is_number":true,"status":"absent","rollcall_status":"finished","rollcall_time":"2026-10-08T00:03:17Z"}]}"#
+        let timetable = #"{"rollcalls":[{"id":7,"course":{"id":1},"is_number":true,"number_code":"0007","status":"finished","rollcall_time":"2026-10-07T16:30:00Z","student_rollcalls":[{"student_id":9,"status":"absent"}]},{"id":8,"course":{"id":1},"is_number":true,"number_code":"0008","status":"finished","rollcall_time":"2026-10-08T00:03:17Z","student_rollcalls":[{"student_id":9,"status":"on_call"}]}]}"#
+        let transport = SequenceTransport([(200, history), (200, #"{"rollcalls":[]}"#), (200, timetable)])
+        let state = AppState(store: store)
+        state.authentication = { id, username, _, _ in try self.makeSession(id, username: username, transport: transport) }
+        _ = try await state.login(account.id)
+        await state.loadHistory(course: Course(id: "1", name: "Test"), reset: true)
+        XCTAssertEqual(state.records.first(where: { $0.id == "7" })?.numberCode, "0007")
+        XCTAssertEqual(state.records.first(where: { $0.id == "7" })?.stateText, "已签到")
+        XCTAssertEqual(state.records.first(where: { $0.id == "8" })?.numberCode, "0008")
+        XCTAssertEqual(state.records.first(where: { $0.id == "8" })?.stateText, "缺勤")
+        XCTAssertNil(state.historyError)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 3)
+        XCTAssertEqual(requests.last?.path, sampleTimetablePath)
+        XCTAssertTrue(requests.allSatisfy { $0.method == "GET" })
+    }
+    func testUnconfirmedSubmissionAndReconcileUseOriginalCourseAndDateWithoutResubmitting() async throws {
+        let store = try LocalStore(inMemory: true)
+        let account = try store.saveAccount(id: nil, username: "a", password: "a", note: "")
+        let transport = SequenceTransport([
+            (200, timetableBody(activity: "active")), (200, "{}"),
+            (200, timetableBody(status: nil, activity: "active")),
+            (200, timetableBody(status: "on_call"))
+        ])
+        let state = AppState(store: store)
+        state.authentication = { id, username, _, _ in try self.makeSession(id, username: username, transport: transport) }
+        _ = try await state.login(account.id)
+        let record = try Attendance(json: .object([
+            "id": .string("7"), "is_number": .bool(true), "status": .string("active"),
+            "rollcall_time": .string(sampleRollcallTime)
+        ]))
+        await state.submit(record, course: Course(id: "1", name: "Test"))
+        let log = try XCTUnwrap(store.logs.first)
+        XCTAssertEqual(log.result, .uncertain)
+        XCTAssertEqual(log.rollcallDate, Attendance.parseDate(sampleRollcallTime))
+        // The user may navigate elsewhere before reconciling this old log.
+        state.historyCourseID = "777"
+        try await state.reconcile(log)
+        XCTAssertEqual(log.result, .success)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.map(\.path), [sampleTimetablePath, "/api/rollcall/7/answer_number_rollcall", sampleTimetablePath, sampleTimetablePath])
+        XCTAssertEqual(requests.filter { $0.method == "PUT" }.count, 1)
+    }
+    func testLegacyLogRecoversDateFromHistoryPagesBeforeReconcile() async throws {
+        let store = try LocalStore(inMemory: true)
+        let account = try store.saveAccount(id: nil, username: "a", password: "a", note: "")
+        let transport = SequenceTransport([
+            (200, #"{"rollcalls":[{"rollcall_id":99,"rollcall_time":"2026-10-10T00:03:17Z"}],"pages":2}"#),
+            (200, #"{"rollcalls":[{"rollcall_id":7,"rollcall_time":"2026-10-08T00:03:17Z"}],"pages":2}"#),
+            (200, timetableBody(status: "on_call"))
+        ])
+        let state = AppState(store: store)
+        state.authentication = { id, username, _, _ in try self.makeSession(id, username: username, transport: transport) }
+        _ = try await state.login(account.id)
+        let record = try Attendance(json: .object(["id": .string("7"), "is_number": .bool(true)]))
+        let log = try store.begin(account: account, studentID: "9", course: Course(id: "1", name: "Test"), record: record)
+        try store.update(log, result: .uncertain, message: "旧记录")
+        XCTAssertNil(log.rollcallDate)
+        try await state.reconcile(log)
+        XCTAssertEqual(log.result, .success)
+        XCTAssertEqual(log.rollcallDate, Attendance.parseDate(sampleRollcallTime))
+        let requests = await transport.requests
+        XCTAssertEqual(requests.filter { $0.path.contains("/student/") }.map(\.path), [
+            "/api/course/1/student/9/rollcalls?page=1&page_size=99",
+            "/api/course/1/student/9/rollcalls?page=2&page_size=99"
+        ])
+        XCTAssertEqual(requests.filter { $0.path.hasPrefix("/api/timetable_rollcalls?") }.map(\.path), [sampleTimetablePath])
+        XCTAssertTrue(requests.allSatisfy { $0.method == "GET" })
+    }
+    func testEndedReconcileWithoutOwnStatusStaysUncertain() async throws {
+        let store = try LocalStore(inMemory: true)
+        let account = try store.saveAccount(id: nil, username: "a", password: "a", note: "")
+        let transport = SequenceTransport([(200, timetableBody(status: nil)), (200, timetableBody(status: "absent"))])
+        let state = AppState(store: store)
+        state.authentication = { id, username, _, _ in try self.makeSession(id, username: username, transport: transport) }
+        _ = try await state.login(account.id)
+        let record = try Attendance(json: .object([
+            "id": .string("7"), "rollcall_time": .string(sampleRollcallTime), "is_number": .bool(true)
+        ]))
+        let log = try store.begin(account: account, studentID: "9", course: Course(id: "1", name: "Test"), record: record)
+        try store.update(log, result: .uncertain, message: "待核对")
+        try await state.reconcile(log)
+        XCTAssertEqual(log.result, .uncertain, "其他同学已签到不代表本人已签到，缺少本人行也不代表缺勤")
+        try await state.reconcile(log)
+        XCTAssertEqual(log.result, .failure, "明确的本人缺勤状态才判为失败")
+        let requests = await transport.requests
+        XCTAssertTrue(requests.allSatisfy { $0.method == "GET" && $0.path == sampleTimetablePath })
     }
     func testKeychainRoundTripKeepsPasswordExactly() async throws {
         let id = UUID(); defer { try? CredentialVault.delete(id) }
@@ -268,7 +418,7 @@ actor SequenceTransport: HTTPTransport {
             let store = try LocalStore(storageURL: url)
             let account = try store.saveAccount(id: nil, username: "disk-test", password: "example", note: "Snapshot")
             accountID = account.id
-            let record = try Attendance(json: .object(["rollcall_id": .string("7"), "is_radar": .bool(true)]))
+            let record = try Attendance(json: .object(["rollcall_id": .string("7"), "course_id": .string("1"), "rollcall_time": .string(sampleRollcallTime), "is_radar": .bool(true)]))
             _ = try store.begin(account: account, studentID: "9", course: Course(id: "1", name: "Test"), record: record)
         }
         let reopened = try LocalStore(storageURL: url)

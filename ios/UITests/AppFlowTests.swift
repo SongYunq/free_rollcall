@@ -21,6 +21,17 @@ final class AppFlowTests: XCTestCase {
             waitForExpectations(timeout: 5)
             if id != "704" { XCTAssertFalse(row.label.contains("缺勤")) }
             XCTAssertFalse(app.navigationBars["签到详情"].exists)
+            if id == "703" {
+                row.tap()
+                XCTAssertTrue(app.navigationBars["签到详情"].waitForExistence(timeout: 5))
+                XCTAssertTrue(app.staticTexts["已签到"].waitForExistence(timeout: 5))
+                app.buttons["完成"].tap()
+                XCTAssertTrue(row.waitForExistence(timeout: 5))
+                expectation(for: NSPredicate(format: "label CONTAINS %@", "已签到"), evaluatedWith: row)
+                waitForExpectations(timeout: 5)
+                XCTAssertFalse(row.label.contains("已结束"))
+                XCTAssertFalse(row.label.contains("缺勤"))
+            }
         }
     }
 
