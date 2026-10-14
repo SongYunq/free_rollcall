@@ -43,17 +43,35 @@ class TronclassClient(val transport: Transport, private val wait: suspend (Long)
         val json = read(ApiRequest("/api/radar/rollcalls"))
         return (json.field("rollcalls").rows() ?: json.rows() ?: throw RollcallException.malformed()).map(Attendance::parse)
     }
-    suspend fun detail(id: String, studentId: String): Attendance {
-        validateId(id); validateId(studentId)
-        val json = read(ApiRequest("/api/rollcall/$id/student_rollcalls"))
+    suspend fun timetableRollcalls(courseId: String, date: String): List<JsonElement> {
+        validateId(courseId); validateDate(date)
+        val json = read(ApiRequest("/api/timetable_rollcalls?course_ids=$courseId&rollcall_date=$date"))
         if (!json.isJsonObject) throw RollcallException.malformed()
-        val fields = json.asJsonObject.deepCopy().apply { addProperty("rollcall_id", id) }
-        val own = json.field("student_rollcalls").rows()?.firstOrNull { it.field("student_id").text() == studentId }
+        val rows = json.field("rollcalls").rows() ?: throw RollcallException.malformed()
+        return rows.filter { row ->
+            if (!row.isJsonObject) throw RollcallException.malformed()
+            val returnedCourseId = row.field("course")?.field("id").text() ?: row.field("course_id").text()
+            returnedCourseId == null || returnedCourseId == courseId
+        }
+    }
+    suspend fun detail(courseId: String, id: String, date: String, studentId: String): Attendance {
+        validateId(courseId); validateId(id); validateId(studentId)
+        validateDate(date)
+        val rows = timetableRollcalls(courseId, date)
+        val item = rows.firstOrNull {
+            val rid = it.field("id").text() ?: it.field("rollcall_id").text()
+            rid == id
+        } ?: throw RollcallException.message("该日期的查询结果中未找到本次签到")
+        val fields = item.asJsonObject.deepCopy().apply { addProperty("rollcall_id", id) }
+        val own = item.field("student_rollcalls").rows()?.firstOrNull { it.field("student_id").text() == studentId }
         return Attendance.parse(fields).copy(personalStatus = own?.field("status").text())
     }
-    suspend fun submitNumber(id: String, code: String, studentId: String): Attendance {
+    suspend fun detail(id: String, studentId: String): Attendance =
+        detail("1", id, rollcallDate(null), studentId)
+    suspend fun submitNumber(id: String, code: String, studentId: String, courseId: String = "1", date: String = rollcallDate(null)): Attendance {
         // Validate the identity needed for read-back before making any remote write.
         validateId(id); validateId(studentId)
+        if (courseId.isNotEmpty()) validateId(courseId)
         if (code.isEmpty()) throw RollcallException.message("未能取得数字签到码")
         val response = transport.send(ApiRequest("/api/rollcall/$id/answer_number_rollcall", "PUT",
             obj("deviceId" to UUID.randomUUID().toString(), "numberCode" to code)))
@@ -68,7 +86,7 @@ class TronclassClient(val transport: Transport, private val wait: suspend (Long)
         for (attempt in 0..2) {
             if (attempt > 0) wait(800L * attempt)
             try {
-                val record = detail(id, studentId)
+                val record = detail(courseId, id, date, studentId)
                 if (record.isAnswered) return record
             } catch (error: CancellationException) { throw error }
             catch (_: Exception) { /* An accepted request can outlive a failed status query. */ }

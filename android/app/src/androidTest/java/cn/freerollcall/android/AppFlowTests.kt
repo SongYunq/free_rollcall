@@ -40,11 +40,12 @@ private class FixtureTransport : Transport {
             request.path.contains("/student/1/rollcalls") -> """{"rollcalls":[{"id":701,"is_number":true,"rollcall_status":"active","status":"absent","rollcall_time":"2026-10-05 08:00:00"},{"id":703,"is_number":true,"rollcall_status":"finished","status":"on_call_fine","rollcall_time":"2026-10-04 08:00:00"},{"id":704,"is_number":true,"rollcall_status":"finished","status":"absent","rollcall_time":"2026-10-03 08:00:00"}],"pages":1}"""
             request.path == "/api/radar/rollcalls" -> """{"rollcalls":[]}"""
             request.path.endsWith("/answer_number_rollcall") -> { answered = true; "{}" }
-            request.path.endsWith("/student_rollcalls") -> {
-                val id = request.path.split('/')[3]
-                val status = if (id == "703" || id == "701" && answered) "on_call_fine" else "absent"
-                val active = if (id == "701") "active" else "finished"
-                """{"is_number":true,"number_code":"0123","status":"$active","student_rollcalls":[{"student_id":1,"status":"$status"}]}"""
+            request.path.startsWith("/api/timetable_rollcalls") -> {
+                val date = request.path.substringAfter("rollcall_date=").substringBefore("&")
+                val status = if (date == "2026-10-04" || answered) "on_call_fine" else "absent"
+                val active = if (date == "2026-10-05") "active" else "finished"
+                val id = if (date == "2026-10-05") 701 else 703
+                """{"rollcalls":[{"id":$id,"is_number":true,"number_code":"0123","status":"$active","student_rollcalls":[{"student_id":1,"status":"$status"}]}]}"""
             }
             else -> error("Unexpected request ${request.path}")
         })
@@ -179,7 +180,7 @@ class AppFlowTests {
         compose.waitUntil(timeoutMillis = 5_000) { !model.state.value.busy && model.state.value.courses.isNotEmpty() }
         compose.onNodeWithTag("course-9").performClick()
         compose.waitUntil(timeoutMillis = 5_000) { !model.state.value.busy && model.state.value.records.size == 3 }
-        transport.pause("/api/rollcall/703/student_rollcalls")
+        transport.pause("/api/timetable_rollcalls?course_ids=9&rollcall_date=2026-10-04")
         compose.onNodeWithTag("attendance-703").performClick()
         compose.waitUntil(timeoutMillis = 5_000) { model.state.value.busy }
         compose.onNodeWithTag("page-loading").assertDoesNotExist()

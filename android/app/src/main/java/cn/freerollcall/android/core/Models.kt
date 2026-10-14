@@ -67,6 +67,7 @@ data class Attendance(
     val isExpired: Boolean? = null, val numberCode: String? = null, val endTime: Instant? = null
 ) {
     val date: Instant? = parseTime(rawDate)
+    val queryDate: String get() = rollcallDate(rawDate, date)
     val isAnswered get() = personalStatus in answeredStatuses
     val hasEnded get() = isExpired == true || activityStatus in endedStatuses ||
         endTime?.let { !it.isAfter(Instant.now()) } == true
@@ -122,6 +123,17 @@ fun parseTime(text: String?): Instant? {
         else runCatching { LocalDateTime.parse(text, schoolDateFormat).atZone(schoolZone).toInstant() }.getOrNull()
 }
 fun displayTime(time: Instant): String = displayDateFormat.format(time)
+private val schoolDatePattern = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(schoolZone)
+fun rollcallDate(text: String?, fallback: Instant? = null): String {
+    if (text != null && text.matches(Regex("""\d{4}-\d{2}-\d{2}"""))) return text
+    val instant = parseTime(text) ?: fallback ?: Instant.now()
+    return schoolDatePattern.format(instant)
+}
+fun validateDate(date: String) {
+    if (!date.matches(Regex("""\d{4}-\d{2}-\d{2}""")) || runCatching { LocalDate.parse(date) }.isFailure) {
+        throw RollcallException.message("查询日期有误，请使用 YYYY-MM-DD 格式的有效日期")
+    }
+}
 
 data class DataPage<T>(val items: List<T>, val page: Int, val hasMore: Boolean, val completenessKnown: Boolean)
 fun <T> parsePage(json: JsonElement, key: String, page: Int, size: Int, parse: (JsonElement) -> T): DataPage<T> {

@@ -42,7 +42,7 @@ class AppModelTests {
     private fun transportForHistory(detailResponses: List<ApiResponse>): QueueTransport = QueueTransport(
         jsonResponse("""{"semester":{"id":1},"academic_year":{"id":1}}"""),
         jsonResponse("""{"courses":[{"id":9,"name":"课程"}],"pages":1}"""),
-        jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"status":"on_call_fine","rollcall_status":"finished"},{"id":12,"is_number":true,"status":"absent","rollcall_status":"finished"}],"pages":1}"""),
+        jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"status":"on_call_fine","rollcall_status":"finished","rollcall_time":"2026-10-08 08:00:00"},{"id":12,"is_number":true,"status":"absent","rollcall_status":"finished","rollcall_time":"2026-10-08 08:00:00"}],"pages":1}"""),
         jsonResponse("""{"rollcalls":[]}"""), *detailResponses.toTypedArray())
     @Test fun automaticallyUsesDefaultAndDefaultChangeDoesNotSwitchSession() = runTest(dispatcher) {
         val store = MemoryStore(); val logins = mutableListOf<String>()
@@ -75,8 +75,8 @@ class AppModelTests {
     @Test fun autoCodesPreserveAnsweredAndOnlyExplicitAbsence() = runTest(dispatcher) {
         val store = MemoryStore(); val logins = mutableListOf<String>()
         val t = transportForHistory(listOf(
-            jsonResponse("""{"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":1,"status":"absent"}]}"""),
-            jsonResponse("""{"is_number":true,"number_code":"0013","status":"active","student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}""")))
+            jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":1,"status":"absent"}]}]}"""),
+            jsonResponse("""{"rollcalls":[{"id":12,"is_number":true,"number_code":"0013","status":"active","student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}]}""")))
         val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), logins))
         model.enterCourses(); advanceUntilIdle(); model.openCourse(Course("9", "课程")); advanceUntilIdle()
         assertEquals(listOf("已签到", "缺勤"), model.state.value.records.map { it.stateText })
@@ -84,7 +84,7 @@ class AppModelTests {
         assertTrue(store.logs().isEmpty()); assertTrue(t.requests.none { it.method == "PUT" })
     }
     @Test fun partialCodeFailureKeepsRowsAndAllowsRefresh() = runTest(dispatcher) {
-        val store = MemoryStore(); val t = transportForHistory(listOf(jsonResponse("{}", 500), jsonResponse("""{"is_number":true,"number_code":"0007"}""")))
+        val store = MemoryStore(); val t = transportForHistory(listOf(jsonResponse("{}", 500), jsonResponse("""{"rollcalls":[{"id":12,"is_number":true,"number_code":"0007"}]}""")))
         val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
         model.enterCourses(); advanceUntilIdle(); model.openCourse(Course("9", "课程")); advanceUntilIdle()
         assertEquals("已签到", model.state.value.records[0].stateText)
@@ -103,7 +103,7 @@ class AppModelTests {
         val store = MemoryStore()
         val log = store.begin(store.saved[0], "1", Course("9", "课程"), Attendance("11"))
         store.update(log.id, LogResult.UNCERTAIN, "待确认")
-        val t = QueueTransport(jsonResponse("""{"status":"finished","student_rollcalls":[]}"""))
+        val t = QueueTransport(jsonResponse("""{"rollcalls":[{"id":11,"status":"finished","student_rollcalls":[]}]}"""))
         val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
         model.loginAccount("a"); advanceUntilIdle(); model.reconcile(log.id); advanceUntilIdle()
         assertEquals(LogResult.UNCERTAIN, store.logs().single().result)
@@ -122,7 +122,7 @@ class AppModelTests {
         val store = MemoryStore()
         val log = store.begin(store.saved[0], "1", Course("9", "课程"), Attendance("11", kind = AttendanceKind.RADAR))
         store.update(log.id, LogResult.UNCERTAIN, "待确认")
-        val t = QueueTransport(jsonResponse("""{"status":"finished","student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}"""))
+        val t = QueueTransport(jsonResponse("""{"rollcalls":[{"id":11,"status":"finished","student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}]}"""))
         val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
         model.loginAccount("a"); advanceUntilIdle(); model.reconcile(log.id); advanceUntilIdle()
         assertEquals(LogResult.SUCCESS, store.logs().single().result)
@@ -145,11 +145,11 @@ class AppModelTests {
         val t = QueueTransport(
             jsonResponse("""{"semester":{"id":1},"academic_year":{"id":1}}"""),
             jsonResponse("""{"courses":[{"id":9,"name":"课程"}],"pages":1}"""),
-            jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"absent","rollcall_status":"active"}],"pages":1}"""),
+            jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"absent","rollcall_status":"active","rollcall_time":"2026-10-08 08:00:00"}],"pages":1}"""),
             jsonResponse("""{"rollcalls":[]}"""),
-            jsonResponse("""{"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":1,"status":"absent"}]}"""),
+            jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":1,"status":"absent"}]}]}"""),
             jsonResponse("{}"),
-            jsonResponse("""{"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}"""))
+            jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}]}"""))
         val model = AppModel(store, dispatcher, auth(store, TronclassClient(t) {}, mutableListOf()))
         model.enterCourses(); advanceUntilIdle(); model.openCourse(Course("9", "课程")); advanceUntilIdle()
         model.submit("11"); model.submit("11"); advanceUntilIdle()
@@ -172,15 +172,15 @@ class AppModelTests {
     private fun submissionTransport(vararg tail: ApiResponse) = QueueTransport(
         jsonResponse("""{"semester":{"id":1},"academic_year":{"id":1}}"""),
         jsonResponse("""{"courses":[{"id":9,"name":"课程"}],"pages":1}"""),
-        jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"absent","rollcall_status":"active"}],"pages":1}"""),
+        jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"absent","rollcall_status":"active","rollcall_time":"2026-10-08 08:00:00"}],"pages":1}"""),
         jsonResponse("""{"rollcalls":[]}"""), *tail)
     @Test fun expiredSubmissionPreflightRenewsSelectedAccountAndWritesOnlyOnce() = runTest(dispatcher) {
         val store = MemoryStore(); val logins = mutableListOf<String>()
         val t = submissionTransport(
             jsonResponse("", 401),
-            jsonResponse("""{"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":2,"status":"absent"}]}"""),
+            jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":2,"status":"absent"}]}]}"""),
             jsonResponse("{}"),
-            jsonResponse("""{"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":2,"status":"on_call_fine"}]}"""))
+            jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":2,"status":"on_call_fine"}]}]}"""))
         val model = AppModel(store, dispatcher, auth(store, TronclassClient(t) {}, logins))
         model.loginAccount("b"); advanceUntilIdle()
         model.enterCourses(); advanceUntilIdle(); model.openCourse(Course("9", "课程")); advanceUntilIdle()

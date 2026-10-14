@@ -92,28 +92,43 @@ class ClientTests {
         }
     }
     @Test fun detailUsesOnlyCurrentStudentAndDoesNotBorrowClassmateStatus() = runTest {
-        val body = """{"is_number":true,"number_code":"0123","status":"finished","student_rollcalls":[{"student_id":2,"status":"on_call_fine"},{"student_id":1,"status":"absent"}]}"""
+        val body = """{"rollcalls":[{"id":11,"is_number":true,"number_code":"0123","status":"finished","student_rollcalls":[{"student_id":2,"status":"on_call_fine"},{"student_id":1,"status":"absent"}]}]}"""
         val client = TronclassClient(QueueTransport(jsonResponse(body), jsonResponse(body)))
-        assertEquals("absent", client.detail("11", "1").personalStatus)
-        assertNull(client.detail("11", "99").personalStatus)
+        assertEquals("absent", client.detail("9", "11", "2026-10-08", "1").personalStatus)
+        assertNull(client.detail("9", "11", "2026-10-08", "99").personalStatus)
+    }
+    @Test fun timetableRollcallsFiltersOtherCoursesAndMatchesTargetId() = runTest {
+        val body = """{"rollcalls":[
+            {"id":10,"course":{"id":999},"number_code":"9999","student_rollcalls":[]},
+            {"id":11,"course":{"id":9},"number_code":"0012","status":"active","student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]},
+            {"id":12,"course_id":9,"number_code":"0013","student_rollcalls":[]}
+        ]}"""
+        val transport = QueueTransport(jsonResponse(body))
+        val client = TronclassClient(transport)
+        val detail = client.detail("9", "11", "2026-10-08", "1")
+        assertEquals("0012", detail.numberCode)
+        assertEquals("on_call_fine", detail.personalStatus)
+        assertEquals("/api/timetable_rollcalls?course_ids=9&rollcall_date=2026-10-08", transport.requests.single().path)
     }
     @Test fun acceptedNumberSubmissionPollsWithoutResubmitting() = runTest {
         val transport = QueueTransport(jsonResponse("{}"),
-            jsonResponse("""{"student_rollcalls":[{"student_id":1,"status":"absent"}]}"""),
-            jsonResponse("""{"student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}"""))
+            jsonResponse("""{"rollcalls":[{"id":9,"student_rollcalls":[{"student_id":1,"status":"absent"}]}]}"""),
+            jsonResponse("""{"rollcalls":[{"id":9,"student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}]}"""))
         val waits = mutableListOf<Long>()
-        val record = TronclassClient(transport) { waits += it }.submitNumber("9", "0012", "1")
+        val record = TronclassClient(transport) { waits += it }.submitNumber("9", "0012", "1", "1", "2026-10-08")
         assertTrue(record.isAnswered)
         assertEquals(1, transport.requests.count { it.method == "PUT" })
         assertEquals("0012", transport.requests[0].body!!.field("numberCode").text())
         assertEquals(listOf(800L), waits)
+        assertEquals("/api/timetable_rollcalls?course_ids=1&rollcall_date=2026-10-08", transport.requests[1].path)
     }
     @Test fun failedReadBackNeverResubmitsOrClaimsFailure() = runTest {
         val transport = QueueTransport(jsonResponse("{}"), jsonResponse("{}", 500), jsonResponse("{}", 503), jsonResponse("{}", 401))
-        try { TronclassClient(transport) {}.submitNumber("9", "0012", "1"); fail("Expected uncertain") }
+        try { TronclassClient(transport) {}.submitNumber("9", "0012", "1", "1", "2026-10-08"); fail("Expected uncertain") }
         catch (error: RollcallException) { assertEquals(RollcallException.Reason.UNCERTAIN, error.reason) }
         assertEquals(1, transport.requests.count { it.method == "PUT" })
         assertEquals(3, transport.requests.count { it.method == "GET" })
+        assertTrue(transport.requests.drop(1).all { it.path.startsWith("/api/timetable_rollcalls") })
     }
     @Test fun rejectedNumberCodeDoesNotPoll() = runTest {
         val transport = QueueTransport(jsonResponse("{}", 400))
@@ -148,8 +163,8 @@ class ClientTests {
     }
     @Test fun malformedAcceptedNumberResponseStillConfirmsByReadBack() = runTest {
         val transport = QueueTransport(jsonResponse("InternalError"),
-            jsonResponse("""{"student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}"""))
-        assertTrue(TronclassClient(transport).submitNumber("9", "0012", "1").isAnswered)
+            jsonResponse("""{"rollcalls":[{"id":9,"student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}]}"""))
+        assertTrue(TronclassClient(transport).submitNumber("9", "0012", "1", "1", "2026-10-08").isAnswered)
         assertEquals(1, transport.requests.count { it.method == "PUT" })
     }
 }

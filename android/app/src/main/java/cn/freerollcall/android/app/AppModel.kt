@@ -212,7 +212,11 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
             for (batch in missing.chunked(4)) {
                 val details = coroutineScope {
                     batch.map { row -> async {
-                        try { row.id to remote { current.client.detail(row.id, current.profile.id) } }
+                        try {
+                            val courseId = row.courseId ?: course.id
+                            val date = row.queryDate
+                            row.id to remote { current.client.detail(courseId, row.id, date, current.profile.id) }
+                        }
                         catch (error: CancellationException) { throw error }
                         catch (_: Exception) { row.id to null }
                     } }.awaitAll().toMap()
@@ -235,7 +239,8 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
     }
     fun refreshDetail(id: String) = operation {
         val record = state.value.records.firstOrNull { it.id == id } ?: return@operation
-        val detail = read { it.client.detail(id, it.profile.id) }
+        val courseId = record.courseId ?: state.value.selectedCourse?.id ?: return@operation
+        val detail = read { it.client.detail(courseId, id, record.queryDate, it.profile.id) }
         change { it.copy(records = it.records.map { row -> if (row.id == id) record.merge(detail) else row }) }
     }
     fun submit(id: String) = operation {
@@ -251,7 +256,9 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
         try {
             reload()
             // A read can renew an expired session before the first submission, but never retry a write.
-            var fresh = original.merge(read { it.client.detail(id, it.profile.id) })
+            val courseId = original.courseId ?: course.id
+            val date = original.queryDate
+            var fresh = original.merge(read { it.client.detail(courseId, id, date, it.profile.id) })
             val current = ensureSession()
             storage { store.update(log.id, LogResult.PROCESSING, "正在准备签到", fresh.numberCode, fresh.kind, current.profile.id) }
             replace(fresh)
@@ -266,7 +273,7 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
                 AttendanceKind.NUMBER -> {
                     val code = fresh.numberCode?.takeIf { it.isNotEmpty() } ?: throw RollcallException.message("未能取得数字签到码")
                     attempted = true
-                    fresh = fresh.merge(remote { current.client.submitNumber(id, code, current.profile.id) })
+                    fresh = fresh.merge(remote { current.client.submitNumber(id, code, current.profile.id, courseId, date) })
                 }
                 AttendanceKind.RADAR -> {
                     attempted = true
@@ -298,7 +305,8 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
             throw RollcallException.message("请先在账号管理登录这条记录对应的账号")
         val current = session!!
         if (log.studentId.isNotEmpty() && current.profile.id != log.studentId) throw RollcallException.message("登录账号与记录不一致")
-        val record = try { remote { current.client.detail(log.rollcallId, current.profile.id) } }
+        val date = rollcallDate(null, log.createdAt)
+        val record = try { remote { current.client.detail(log.courseId, log.rollcallId, date, current.profile.id) } }
         catch (error: RollcallException) {
             if (error.reason == RollcallException.Reason.EXPIRED) expireSession()
             throw error
