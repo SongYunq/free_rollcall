@@ -17,6 +17,9 @@ htmlcov/
 /dist/
 /backups/
 
+# Independent local reference repository
+/bot/
+
 # Machine-specific editor and OS files
 .idea/
 .DS_Store
