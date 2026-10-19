@@ -112,8 +112,10 @@ python3 -m venv .venv
 | 未指定日期，确定课程最新一次签到 | 原 `/api/course/{course_id}/student/{student_id}/rollcalls?page=1&page_size=99` |
 | 查询一天的签到列表、读取签到码、获取人数统计的名单 | 新 `/api/timetable_rollcalls?course_ids=<course_id>&rollcall_date=<yyyy-mm-dd>` |
 
-未指定日期时，先从学生签到列表取得最新签到编号与时间，再用该时间的北京时间日期和签到编号
-匹配新接口；指定日期则直接请求新接口。签到码保留前导零。
+新接口的 `rollcall_date` 按 UTC 日期筛选；命令行输入的 `--date` 与显示时间仍按北京时间。
+未指定日期时，先从学生签到列表取得最新签到编号与时间，再用该时间的 UTC 日期和签到编号
+匹配新接口。按日查询会请求所选北京时间日期覆盖的两个 UTC 日期，按发起时间筛选并去重，
+避免漏掉早上 8 点前的签到或混入次日记录。签到码保留前导零。
 命令行不调用旧 `/api/rollcall/{rollcall_id}/student_rollcalls`，查询失败也不回退到它。
 旧接口只保留给历史桌面源码；iOS 和安卓有各自独立的查询实现，本次不调整。
 
@@ -126,7 +128,9 @@ python3 -m venv .venv
 | `get_current_semester_info(cookie, ...)` | 查询学期，返回 `(semester_id, academic_year_id)` |
 | `get_courses(cookie, semester_id, academic_year_id, ...)` | 分页查询本学期课程，按课程 ID 去重 |
 | `get_latest_rollcall_id(course_id, cookie, student_id)` | 获取最新签到编号与发起时间，无记录时返回 `(None, None)` |
-| `get_timetable_rollcalls(course_id, rollcall_date, cookie)` | 通过课程日期接口查询签到列表 |
+| `get_rollcall_date(rollcall_time)` | 将发起时间转换为接口使用的 UTC 日期，无时区时间按北京时间解释 |
+| `get_timetable_rollcalls(course_id, rollcall_date, cookie)` | 按 UTC 日期直接查询接口的签到列表 |
+| `get_daily_rollcalls(course_id, rollcall_date, cookie)` | 按北京时间查询一天，合并两个 UTC 日期的结果并筛选、去重 |
 | `get_timetable_rollcall(course_id, rollcall_id, rollcall_time, cookie)` | 从课程日期接口匹配指定签到记录 |
 | `get_timetable_number_code(course_id, rollcall_id, rollcall_time, cookie)` | 保留现有调用方式，返回 `(number_code, status, end_time)` |
 | `summarize_attendance(rollcall)` | 汇总人数与状态，不发起网络请求 |

@@ -19,9 +19,9 @@ from rollcall_service import (
     RollcallQueryError,
     get_courses,
     get_current_semester_info,
+    get_daily_rollcalls,
     get_latest_rollcall_id,
     get_timetable_rollcall,
-    get_timetable_rollcalls,
     login_and_get_cookie,
     login_in_browser,
     summarize_attendance,
@@ -337,7 +337,7 @@ def _query_rollcall(args, course_id, session):
         if rollcall_id is None:
             return None
         return get_timetable_rollcall(course_id, rollcall_id, rollcall_time, session.cookie)
-    records = get_timetable_rollcalls(course_id, args.date, session.cookie)
+    records = get_daily_rollcalls(course_id, args.date, session.cookie)
     if args.rollcall_id is not None:
         for record in records:
             if str(_rollcall_id(record)) == str(args.rollcall_id):
@@ -386,7 +386,7 @@ def _execute_query(args, session):
         raise RollcallQueryError("课程缺少 ID，无法查询")
     if args.command == "rollcalls":
         query_date = args.date or datetime.now(SCHOOL_TIMEZONE).date().isoformat()
-        records = get_timetable_rollcalls(course_id, query_date, session.cookie)
+        records = get_daily_rollcalls(course_id, query_date, session.cookie)
         if not records:
             log_to_terminal(f"[INFO] 该课程在 {query_date} 暂无签到记录")
             return

@@ -58,7 +58,7 @@ class CliCommandTests(unittest.TestCase):
                 "get_courses": COURSES,
                 "get_latest_rollcall_id": (441597, "2026-10-08T00:03:17Z"),
                 "get_timetable_rollcall": rollcall(),
-                "get_timetable_rollcalls": [rollcall()],
+                "get_daily_rollcalls": [rollcall()],
             }
             for name, value in defaults.items():
                 value = replacements.get(name, value)
@@ -76,7 +76,7 @@ class CliCommandTests(unittest.TestCase):
     def assert_no_authentication(self, mocks):
         mocks["_login"].assert_not_awaited()
         mocks["_load_account"].assert_not_called()
-        for name in ("get_current_semester_info", "get_courses", "get_latest_rollcall_id", "get_timetable_rollcall", "get_timetable_rollcalls"):
+        for name in ("get_current_semester_info", "get_courses", "get_latest_rollcall_id", "get_timetable_rollcall", "get_daily_rollcalls"):
             mocks[name].assert_not_called()
 
     def test_global_help_lists_commands_without_authentication(self):
@@ -123,7 +123,7 @@ class CliCommandTests(unittest.TestCase):
         mocks["_login"].assert_awaited_once_with(unattended=True, manual=False)
         mocks["get_current_semester_info"].assert_called_once()
         self.assertEqual(mocks["get_courses"].call_args.args[:3], (COOKIE, "test-semester", "test-year"))
-        mocks["get_timetable_rollcalls"].assert_not_called()
+        mocks["get_daily_rollcalls"].assert_not_called()
         mocks["get_latest_rollcall_id"].assert_not_called()
 
     def test_manual_login_flag_passes_explicit_interactive_mode(self):
@@ -136,7 +136,7 @@ class CliCommandTests(unittest.TestCase):
         self.assertEqual(result, 0)
         mocks["get_latest_rollcall_id"].assert_called_once_with(110406, COOKIE, STUDENT_ID)
         mocks["get_timetable_rollcall"].assert_called_once_with(110406, 441597, "2026-10-08T00:03:17Z", COOKIE)
-        mocks["get_timetable_rollcalls"].assert_not_called()
+        mocks["get_daily_rollcalls"].assert_not_called()
         self.assertIn("0007", output)
         self.assertIn("已结束", output)
         self.assertIn("2026-10-08 08:03", output)
@@ -158,12 +158,12 @@ class CliCommandTests(unittest.TestCase):
     def test_day_rollcalls_prints_all_codes_and_uses_new_endpoint_only(self):
         records = [rollcall(), rollcall(id=441598, number_code="0025", status="active", rollcall_time="2026-10-08T02:03:17Z")]
         result, output, mocks = self.run_cli(
-            ["rollcalls", "1", "--date", "2026-10-08"], replacements={"get_timetable_rollcalls": records}
+            ["rollcalls", "1", "--date", "2026-10-08"], replacements={"get_daily_rollcalls": records}
         )
         self.assertEqual(result, 0)
         for text in ("0007", "0025", "441597", "441598", "已结束", "进行中"):
             self.assertIn(text, output)
-        mocks["get_timetable_rollcalls"].assert_called_once_with(110405, "2026-10-08", COOKIE)
+        mocks["get_daily_rollcalls"].assert_called_once_with(110405, "2026-10-08", COOKIE)
         mocks["get_latest_rollcall_id"].assert_not_called()
         mocks["get_timetable_rollcall"].assert_not_called()
 
@@ -172,13 +172,13 @@ class CliCommandTests(unittest.TestCase):
         result, _, mocks = self.run_cli(["rollcalls", "--course-id", "110405"])
         after = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
         self.assertEqual(result, 0)
-        self.assertIn(mocks["get_timetable_rollcalls"].call_args.args[1], {before, after})
+        self.assertIn(mocks["get_daily_rollcalls"].call_args.args[1], {before, after})
 
     def test_historical_id_matches_exact_record_instead_of_latest(self):
         records = [rollcall(id=441598, number_code="1255", rollcall_time="2026-10-08T02:03:17Z"), rollcall()]
         result, output, mocks = self.run_cli(
             ["code", "--course-id", "110405", "--date", "2026-10-08", "--rollcall-id", "441597"],
-            replacements={"get_timetable_rollcalls": records},
+            replacements={"get_daily_rollcalls": records},
         )
         self.assertEqual(result, 0)
         self.assertIn("0007", output)
@@ -196,14 +196,14 @@ class CliCommandTests(unittest.TestCase):
             rollcall(id=441596, number_code="0139", rollcall_time="2026-10-08T02:03:17Z"),
             rollcall(id=441598, number_code="7755", rollcall_time="2026-10-08T01:03:17Z"),
         ]
-        result, output, _ = self.run_cli(["code", "1", "--date", "2026-10-08"], replacements={"get_timetable_rollcalls": records})
+        result, output, _ = self.run_cli(["code", "1", "--date", "2026-10-08"], replacements={"get_daily_rollcalls": records})
         self.assertEqual(result, 0)
         self.assertIn("0139", output)
         self.assertNotIn("7755", output)
 
     def test_missing_times_cannot_silently_choose_a_day_record(self):
         records = [rollcall(rollcall_time=None, created_at=None), rollcall(id=441598, rollcall_time=None, created_at=None)]
-        result, output, _ = self.run_cli(["code", "1", "--date", "2026-10-08"], replacements={"get_timetable_rollcalls": records})
+        result, output, _ = self.run_cli(["code", "1", "--date", "2026-10-08"], replacements={"get_daily_rollcalls": records})
         self.assertEqual(result, 1)
         self.assertNotIn("0007", output)
 
@@ -229,7 +229,7 @@ class CliCommandTests(unittest.TestCase):
         records = [rollcall(), rollcall(id=441598, student_rollcalls=[])]
         result, output, _ = self.run_cli(
             ["attendance", "1", "--date", "2026-10-08", "--rollcall-id", "441598"],
-            replacements={"get_timetable_rollcalls": records},
+            replacements={"get_daily_rollcalls": records},
         )
         self.assertEqual(result, 0)
         self.assertRegex(output, r"(?m)^\s*统计人数\s+0\s*$")
@@ -238,7 +238,7 @@ class CliCommandTests(unittest.TestCase):
         cases = [
             (["courses"], {"get_courses": []}),
             (["code", "--course-id", "110405"], {"get_latest_rollcall_id": (None, None)}),
-            (["rollcalls", "1", "--date", "2026-10-08"], {"get_timetable_rollcalls": []}),
+            (["rollcalls", "1", "--date", "2026-10-08"], {"get_daily_rollcalls": []}),
         ]
         for argv, replacement in cases:
             with self.subTest(argv=argv):
@@ -249,7 +249,7 @@ class CliCommandTests(unittest.TestCase):
         result, output, mocks = self.run_cli(["code", "1"], replacements={"get_timetable_rollcall": service.RollcallQueryError("离线查询错误")})
         self.assertEqual(result, 1)
         self.assertIn("离线查询错误", output)
-        mocks["get_timetable_rollcalls"].assert_not_called()
+        mocks["get_daily_rollcalls"].assert_not_called()
 
     def test_authentication_failure_stops_all_queries(self):
         result, output, mocks = self.run_cli(["courses"], replacements={"_login": service.LoginError("离线登录失败")})
@@ -312,9 +312,10 @@ class CliCommandTests(unittest.TestCase):
             if url == service.BASE_URL + f"/api/course/110405/student/{STUDENT_ID}/rollcalls?page=1&page_size=99":
                 return response({"rollcalls": [{"id": 441597, "rollcall_time": "2026-10-08T00:03:17Z"}]})
             if url == service.BASE_URL + "/api/timetable_rollcalls":
-                self.assertEqual(options["params"], {"course_ids": 110405, "rollcall_date": "2026-10-08"})
+                self.assertEqual(options["params"]["course_ids"], 110405)
+                self.assertIn(options["params"]["rollcall_date"], ("2026-10-07", "2026-10-08"))
                 self.assertIs(options["allow_redirects"], False)
-                return response({"rollcalls": [rollcall()]})
+                return response({"rollcalls": [rollcall()] if options["params"]["rollcall_date"] == "2026-10-08" else []})
             raise AssertionError(f"禁止访问未约定接口: {url}")
 
         def post(url, **options):
@@ -338,8 +339,8 @@ class CliCommandTests(unittest.TestCase):
         login.assert_awaited_once_with()
         http_post.assert_called_once()
         urls = [call.args[0] for call in http_get.call_args_list]
-        self.assertEqual(len(urls), 6)
-        self.assertEqual(urls.count(service.BASE_URL + "/api/timetable_rollcalls"), 3)
+        self.assertEqual(len(urls), 7)
+        self.assertEqual(urls.count(service.BASE_URL + "/api/timetable_rollcalls"), 4)
         self.assertFalse(any("/student_rollcalls" in url for url in urls))
         text = output.getvalue()
         self.assertRegex(text, r"(?m)^\s*统计人数\s+3\s*$")
@@ -350,6 +351,44 @@ class CliCommandTests(unittest.TestCase):
         self.assertIn("退出程序", text)
         for student_detail in ("710001", "710002", "710003", "不可输出的学生"):
             self.assertNotIn(student_detail, text)
+
+
+    def test_morning_commands_query_utc_dates_but_display_beijing_time(self):
+        target = rollcall(rollcall_time="2026-10-14T23:56:23Z")
+        cases = [
+            (["code", "--course-id", "110405"], ["2026-10-14"]),
+            (["attendance", "--course-id", "110405"], ["2026-10-14"]),
+            (["rollcalls", "--course-id", "110405", "--date", "2026-10-15"], ["2026-10-14", "2026-10-15"]),
+            (["code", "--course-id", "110405", "--date", "2026-10-15", "--rollcall-id", "441597"], ["2026-10-14", "2026-10-15"]),
+            (["attendance", "--course-id", "110405", "--date", "2026-10-15"], ["2026-10-14", "2026-10-15"]),
+        ]
+        for argv, expected_dates in cases:
+            with self.subTest(argv=argv):
+                dates = []
+
+                def get(url, **options):
+                    response = Mock(status_code=200)
+                    if url == service.BASE_URL + f"/api/course/110405/student/{STUDENT_ID}/rollcalls?page=1&page_size=99":
+                        response.json.return_value = {"rollcalls": [{"rollcall_id": 441597, "rollcall_time": target["rollcall_time"]}]}
+                    elif url == service.BASE_URL + "/api/timetable_rollcalls":
+                        query_date = options["params"]["rollcall_date"]
+                        dates.append(query_date)
+                        response.json.return_value = {"rollcalls": [target] if query_date == "2026-10-14" else []}
+                    else:
+                        raise AssertionError(f"禁止访问未约定接口: {url}")
+                    return response
+
+                output = io.StringIO()
+                with (
+                    patch.object(cli, "_login", new=AsyncMock(return_value=(COOKIE, STUDENT_ID))),
+                    patch.object(service.requests, "get", side_effect=get),
+                    redirect_stdout(output),
+                ):
+                    result = asyncio.run(cli.main(argv))
+                self.assertEqual(result, 0, output.getvalue())
+                self.assertEqual(dates, expected_dates)
+                self.assertIn("2026-10-15 07:56", output.getvalue())
+                self.assertIn("统计人数" if argv[0] == "attendance" else "0007", output.getvalue())
 
 
 class CliLoginTests(unittest.TestCase):

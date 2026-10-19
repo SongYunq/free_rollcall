@@ -224,7 +224,7 @@ class AttendanceQueryTests(unittest.TestCase):
         target = {"id": "7", "number_code": "0009"}
         get.return_value = response({"rollcalls": [{"id": 8}, target]})
         self.assertEqual(service.get_timetable_rollcall(10, 7, "2026-10-07T18:00:00Z", "offline"), target)
-        self.assertEqual(get.call_args.kwargs["params"]["rollcall_date"], "2026-10-08")
+        self.assertEqual(get.call_args.kwargs["params"]["rollcall_date"], "2026-10-07")
         self.assertEqual(get.call_args.args[0], service.BASE_URL + "/api/timetable_rollcalls")
 
 

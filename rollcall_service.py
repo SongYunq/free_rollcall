@@ -396,26 +396,37 @@ def get_number_code(rollcall_id, cookie):
     return data.get("number_code"), data.get("status"), data.get("end_time")
 
 
-def get_rollcall_date(rollcall_time):
-    """将签到时间转换为北京时间日期；无时区的时间按北京时间处理。"""
-    school_timezone = timezone(timedelta(hours=8))
+def _parse_rollcall_time(rollcall_time):
+    """解析发起时间；沿用无时区时间按北京时间处理的约定。"""
     try:
         started_at = datetime.fromisoformat(rollcall_time.replace("Z", "+00:00"))
         if started_at.tzinfo is None:
-            started_at = started_at.replace(tzinfo=school_timezone)
-        return started_at.astimezone(school_timezone).date().isoformat()
+            started_at = started_at.replace(tzinfo=timezone(timedelta(hours=8)))
+        return started_at
     except (AttributeError, TypeError, ValueError, OverflowError):
         raise RollcallQueryError("签到时间缺失或格式有误，无法确定签到查询日期") from None
 
 
-def get_timetable_rollcalls(course_id, rollcall_date, cookie):
-    """读取指定课程、北京时间日期的签到条目，仅排除明确属于其他课程的数据。"""
+def get_rollcall_date(rollcall_time):
+    """返回新接口要求的 UTC 日期，与界面显示的北京时间分开。"""
+    try:
+        return _parse_rollcall_time(rollcall_time).astimezone(timezone.utc).date().isoformat()
+    except (ValueError, OverflowError):
+        raise RollcallQueryError("签到时间超出支持范围，无法确定签到查询日期") from None
+
+
+def _parse_query_date(rollcall_date):
     try:
         if not isinstance(rollcall_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", rollcall_date):
             raise ValueError
-        date.fromisoformat(rollcall_date)
+        return date.fromisoformat(rollcall_date)
     except (TypeError, ValueError):
         raise RollcallQueryError("查询日期有误，请使用 YYYY-MM-DD 格式的有效日期") from None
+
+
+def get_timetable_rollcalls(course_id, rollcall_date, cookie):
+    """读取指定课程、UTC 日期的签到条目，仅排除明确属于其他课程的数据。"""
+    _parse_query_date(rollcall_date)
     try:
         resp = requests.get(
             f"{BASE_URL}/api/timetable_rollcalls",
@@ -445,8 +456,36 @@ def get_timetable_rollcalls(course_id, rollcall_date, cookie):
     return records
 
 
+def get_daily_rollcalls(course_id, rollcall_date, cookie):
+    """按北京时间查询完整一天，合并两个 UTC 日期并剔除相邻日记录。"""
+    local_day = _parse_query_date(rollcall_date)
+    try:
+        utc_days = (local_day - timedelta(days=1), local_day)
+    except OverflowError:
+        raise RollcallQueryError("查询日期超出支持范围") from None
+    school_timezone = timezone(timedelta(hours=8))
+    records, seen = [], set()
+    for utc_day in utc_days:
+        for record in get_timetable_rollcalls(course_id, utc_day.isoformat(), cookie):
+            try:
+                started_at = _parse_rollcall_time(record.get("rollcall_time") or record.get("created_at"))
+                record_day = started_at.astimezone(school_timezone).date()
+            except (ValueError, OverflowError):
+                raise RollcallQueryError("签到时间超出支持范围，无法确定所属日期") from None
+            if record_day != local_day:
+                continue
+            record_id = record.get("id") or record.get("rollcall_id")
+            if not isinstance(record_id, (str, int)) or isinstance(record_id, bool) or not str(record_id).strip():
+                raise RollcallQueryError("签到查询返回的签到编号有误")
+            key = str(record_id)
+            if key not in seen:
+                seen.add(key)
+                records.append(record)
+    return records
+
+
 def get_timetable_rollcall(course_id, rollcall_id, rollcall_time, cookie):
-    """按日期、课程和签到 ID 精确匹配单个条目，不回退到旧详情接口。"""
+    """按发起时间的 UTC 日期、课程和签到 ID 匹配，不回退到旧详情接口。"""
     if not isinstance(rollcall_id, (str, int)) or isinstance(rollcall_id, bool) or not str(rollcall_id).strip():
         raise RollcallQueryError("签到编号缺失或格式有误，无法查询本次签到")
     rollcall_date = get_rollcall_date(rollcall_time)
