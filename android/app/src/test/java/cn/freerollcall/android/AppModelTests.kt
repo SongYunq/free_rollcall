@@ -47,7 +47,7 @@ class AppModelTests {
     @Test fun automaticallyUsesDefaultAndDefaultChangeDoesNotSwitchSession() = runTest(dispatcher) {
         val store = MemoryStore(); val logins = mutableListOf<String>()
         val client = TronclassClient(QueueTransport(jsonResponse("""{"semester":{"id":1},"academic_year":{"id":1}}"""), jsonResponse("""{"courses":[],"pages":1}""")))
-        val model = AppModel(store, dispatcher, auth(store, client, logins))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, client, logins))
         model.enterCourses(); advanceUntilIdle()
         assertEquals(listOf("a"), logins); assertEquals("a", model.state.value.currentAccountId)
         model.makeDefault("b")
@@ -56,13 +56,13 @@ class AppModelTests {
     @Test fun manualAccountLoginIsUsedByFeatureInsteadOfDefault() = runTest(dispatcher) {
         val store = MemoryStore(); val logins = mutableListOf<String>()
         val transport = QueueTransport(jsonResponse("""{"semester":{"id":1},"academic_year":{"id":1}}"""), jsonResponse("""{"courses":[],"pages":1}"""))
-        val model = AppModel(store, dispatcher, auth(store, TronclassClient(transport), logins))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(transport), logins))
         model.loginAccount("b"); advanceUntilIdle(); model.enterCourses(); advanceUntilIdle()
         assertEquals(listOf("b"), logins); assertEquals("b", model.state.value.currentAccountId)
     }
     @Test fun threeCredentialErrorsSwitchToManualButNetworkErrorsDoNotCount() = runTest(dispatcher) {
         val modes = mutableListOf<Boolean>(); var network = true
-        val model = AppModel(MemoryStore(), dispatcher) { _, manual ->
+        val model = AppModel(MemoryStore(), dispatcher, dispatcher) { _, manual ->
             modes += manual
             if (network) throw RollcallException(RollcallException.Reason.NETWORK, "网络失败")
             throw RollcallException(RollcallException.Reason.INVALID_CREDENTIALS, "凭证错误")
@@ -76,7 +76,7 @@ class AppModelTests {
         val store = MemoryStore(); val logins = mutableListOf<String>()
         val t = transportForHistory(listOf(
             jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":1,"status":"absent"}]},{"id":12,"is_number":true,"number_code":"0013","status":"active","student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}]}""")))
-        val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), logins))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(t), logins))
         model.enterCourses(); advanceUntilIdle(); model.openCourse(Course("9", "课程")); advanceUntilIdle()
         assertEquals(listOf("已签到", "缺勤"), model.state.value.records.map { it.stateText })
         assertEquals(listOf("0012", "0013"), model.state.value.records.map { it.numberCode })
@@ -86,7 +86,7 @@ class AppModelTests {
     }
     @Test fun partialCodeFailureKeepsRowsAndAllowsRefresh() = runTest(dispatcher) {
         val store = MemoryStore(); val t = transportForHistory(listOf(jsonResponse("""{"rollcalls":[{"id":12,"is_number":true,"number_code":"0007","student_rollcalls":[]}]}""")))
-        val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
         model.enterCourses(); advanceUntilIdle(); model.openCourse(Course("9", "课程")); advanceUntilIdle()
         assertEquals("已签到", model.state.value.records[0].stateText)
         assertEquals("0007", model.state.value.records[1].numberCode)
@@ -110,7 +110,7 @@ class AppModelTests {
                 {"id":13,"student_rollcalls":[]},
                 {"id":14,"is_radar":true,"student_rollcalls":[{"student_id":1,"status":"absent"}]}
             ]}"""))
-        val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
         model.loginAccount("a"); advanceUntilIdle()
         model.openCourse(Course("9", "课程")); advanceUntilIdle()
         val rows = model.state.value.records.associateBy { it.id }
@@ -133,7 +133,7 @@ class AppModelTests {
         val t = QueueTransport(history, active, jsonResponse("{}", 503), history, active,
             jsonResponse("""{"rollcalls":[{"id":11,"student_rollcalls":[{"student_id":1,"status":"on_call_fine"},{"student_id":2,"status":"absent"}]}]}"""),
             history, active, jsonResponse("""{"rollcalls":[{"id":11,"student_rollcalls":[{"student_id":1,"status":"on_call_fine"},{"student_id":2,"status":"on_call_late"}]}]}"""))
-        val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
         model.loginAccount("a"); advanceUntilIdle()
         model.openCourse(Course("9", "课程")); advanceUntilIdle()
         assertNull(model.state.value.records.single().attendanceCounts)
@@ -149,9 +149,104 @@ class AppModelTests {
             .all { it.path == "/api/timetable_rollcalls?course_ids=9&rollcall_date=2026-10-07" })
         assertTrue(t.requests.all { it.method == "GET" })
     }
+    @Test fun slowCountReadsDoNotLockVisibleHistoryAndBackCancelsThem() = runTest(dispatcher) {
+        val store = MemoryStore(); val gate = CompletableDeferred<Unit>()
+        val base = transportForHistory(listOf(jsonResponse("""{"rollcalls":[]}""")))
+        val transport = Transport { request ->
+            if (request.path.startsWith("/api/timetable_rollcalls")) gate.await()
+            base.send(request)
+        }
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(transport), mutableListOf()))
+        model.enterCourses(); advanceUntilIdle()
+        model.openCourse(Course("9", "课程")); advanceUntilIdle()
+        assertEquals(2, model.state.value.records.size)
+        assertFalse(model.state.value.busy)
+        assertEquals(HomeLoading.NONE, model.state.value.homeLoading)
+        assertTrue(model.state.value.historyEnriching)
+        assertTrue(model.back())
+        gate.complete(Unit); advanceUntilIdle()
+        assertEquals(HomePage.COURSES, model.state.value.page)
+        assertTrue(model.state.value.records.isEmpty())
+        assertFalse(model.state.value.historyEnriching)
+        assertFalse(model.state.value.busy)
+    }
+    @Test fun oneSlowDayDoesNotBlockCountsForLaterDays() = runTest(dispatcher) {
+        val store = MemoryStore(); val gate = CompletableDeferred<Unit>()
+        val transport = Transport { request ->
+            when {
+                request.path.contains("/student/1/rollcalls") -> jsonResponse((4..8).joinToString(
+                    prefix = """{"rollcalls":[""", postfix = """],"pages":1}""") { day ->
+                    """{"id":$day,"is_radar":true,"rollcall_status":"finished","rollcall_time":"2026-10-0$day 08:00:00"}"""
+                })
+                request.path == "/api/radar/rollcalls" -> jsonResponse("""{"rollcalls":[]}""")
+                request.path.startsWith("/api/timetable_rollcalls") -> {
+                    val day = request.path.substringAfter("rollcall_date=2026-10-0").toInt()
+                    if (day == 8) gate.await()
+                    jsonResponse("""{"rollcalls":[{"id":$day,"student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}]}""")
+                }
+                else -> error("Unexpected request ${request.path}")
+            }
+        }
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(transport), mutableListOf()))
+        model.loginAccount("a"); advanceUntilIdle()
+        model.openCourse(Course("9", "课程")); advanceUntilIdle()
+        assertFalse(model.state.value.busy)
+        assertTrue(model.state.value.historyEnriching)
+        assertNull(model.state.value.records.first { it.id == "8" }.attendanceCounts)
+        assertEquals(AttendanceCounts(1, 1), model.state.value.records.first { it.id == "4" }.attendanceCounts)
+        gate.complete(Unit); advanceUntilIdle()
+        assertFalse(model.state.value.historyEnriching)
+        assertTrue(model.state.value.records.all { it.attendanceCounts == AttendanceCounts(1, 1) })
+    }
+    @Test fun openingDetailResumesUnfinishedClassCountsWithoutReplacingPersonalStatus() = runTest(dispatcher) {
+        val store = MemoryStore(); val gate = CompletableDeferred<Unit>()
+        var detailReads = 0
+        val transport = Transport { request ->
+            when {
+                request.path.contains("/student/1/rollcalls") -> jsonResponse("""{"rollcalls":[
+                    {"id":11,"is_radar":true,"status":"absent","rollcall_status":"finished","rollcall_time":"2026-10-08 08:00:00"},
+                    {"id":12,"is_radar":true,"status":"absent","rollcall_status":"finished","rollcall_time":"2026-10-08 08:00:00"}
+                ],"pages":1}""")
+                request.path == "/api/radar/rollcalls" -> jsonResponse("""{"rollcalls":[]}""")
+                request.path.startsWith("/api/timetable_rollcalls") -> {
+                    detailReads++
+                    if (detailReads == 1) gate.await()
+                    val ownStatus = if (detailReads == 2) "on_call_fine" else "absent"
+                    jsonResponse("""{"rollcalls":[
+                        {"id":11,"student_rollcalls":[{"student_id":1,"status":"$ownStatus"}]},
+                        {"id":12,"student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}
+                    ]}""")
+                }
+                else -> error("Unexpected request ${request.path}")
+            }
+        }
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(transport), mutableListOf()))
+        model.loginAccount("a"); advanceUntilIdle()
+        model.openCourse(Course("9", "课程")); advanceUntilIdle()
+        assertTrue(model.state.value.historyEnriching)
+        model.refreshDetail("11"); advanceUntilIdle()
+        assertEquals(3, detailReads)
+        assertFalse(model.state.value.historyEnriching)
+        assertFalse(model.state.value.busy)
+        assertEquals("已签到", model.state.value.records.first { it.id == "11" }.stateText)
+        assertEquals(AttendanceCounts(1, 1), model.state.value.records.first { it.id == "12" }.attendanceCounts)
+        gate.complete(Unit)
+    }
+    @Test fun immediateEmptyHistoryDoesNotLeaveBackgroundLoadingSet() = runTest(dispatcher) {
+        val immediate = UnconfinedTestDispatcher(testScheduler)
+        Dispatchers.setMain(immediate)
+        val store = MemoryStore()
+        val client = TronclassClient(QueueTransport(jsonResponse("""{"rollcalls":[],"pages":1}"""),
+            jsonResponse("""{"rollcalls":[]}""")))
+        val model = AppModel(store, immediate, immediate, auth(store, client, mutableListOf()))
+        model.loginAccount("a"); model.openCourse(Course("9", "课程")); advanceUntilIdle()
+        assertTrue(model.state.value.records.isEmpty())
+        assertFalse(model.state.value.historyEnriching)
+        assertFalse(model.state.value.busy)
+    }
     @Test fun accountChangeIsBlockedWhileLoading() = runTest(dispatcher) {
         val waiting = CompletableDeferred<AuthResult>()
-        val model = AppModel(MemoryStore(), dispatcher) { _, _ -> waiting.await() }
+        val model = AppModel(MemoryStore(), dispatcher, dispatcher) { _, _ -> waiting.await() }
         model.loginAccount("a"); runCurrent()
         try { model.makeDefault("b"); fail() } catch (error: RollcallException) { assertTrue(error.message!!.contains("等待")) }
         waiting.cancel(); advanceUntilIdle()
@@ -162,7 +257,7 @@ class AppModelTests {
         val log = store.begin(store.saved[0], "1", Course("9", "课程"), Attendance("11"))
         store.update(log.id, LogResult.UNCERTAIN, "待确认")
         val t = QueueTransport(jsonResponse("""{"rollcalls":[{"id":11,"status":"finished","student_rollcalls":[]}]}"""))
-        val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
         model.loginAccount("a"); advanceUntilIdle(); model.reconcile(log.id); advanceUntilIdle()
         assertEquals(LogResult.UNCERTAIN, store.logs().single().result)
         assertEquals(listOf("GET"), t.requests.map { it.method })
@@ -172,7 +267,7 @@ class AppModelTests {
         val log = store.begin(store.saved[1], "2", Course("9", "课程"), Attendance("11"))
         store.update(log.id, LogResult.UNCERTAIN, "待确认")
         val t = QueueTransport()
-        val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
         model.loginAccount("a"); advanceUntilIdle(); model.reconcile(log.id); advanceUntilIdle()
         assertTrue(t.requests.isEmpty()); assertTrue(model.state.value.notice!!.contains("对应的账号"))
     }
@@ -181,7 +276,7 @@ class AppModelTests {
         val log = store.begin(store.saved[0], "1", Course("9", "课程"), Attendance("11", kind = AttendanceKind.RADAR))
         store.update(log.id, LogResult.UNCERTAIN, "待确认")
         val t = QueueTransport(jsonResponse("""{"rollcalls":[{"id":11,"status":"finished","student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}]}"""))
-        val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
         model.loginAccount("a"); advanceUntilIdle(); model.reconcile(log.id); advanceUntilIdle()
         assertEquals(LogResult.SUCCESS, store.logs().single().result)
         assertEquals(AttendanceKind.RADAR, store.logs().single().kind)
@@ -193,7 +288,7 @@ class AppModelTests {
         val t = QueueTransport(jsonResponse("", 401),
             jsonResponse("""{"semester":{"id":1},"academic_year":{"id":1}}"""),
             jsonResponse("""{"courses":[],"pages":1}"""))
-        val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), logins))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(t), logins))
         model.loginAccount("b"); advanceUntilIdle(); model.enterCourses(); advanceUntilIdle()
         assertEquals(listOf("b", "b"), logins)
         assertEquals("b", model.state.value.currentAccountId); assertTrue(model.state.value.authenticated)
@@ -208,7 +303,7 @@ class AppModelTests {
             jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":1,"status":"absent"}]}]}"""),
             jsonResponse("{}"),
             jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}]}"""))
-        val model = AppModel(store, dispatcher, auth(store, TronclassClient(t) {}, mutableListOf()))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(t) {}, mutableListOf()))
         model.enterCourses(); advanceUntilIdle(); model.openCourse(Course("9", "课程")); advanceUntilIdle()
         model.submit("11"); model.submit("11"); advanceUntilIdle()
         assertEquals(1, store.logs().size); assertEquals(LogResult.SUCCESS, store.logs().single().result)
@@ -225,7 +320,7 @@ class AppModelTests {
                 jsonResponse("""{"rollcalls":[{"id":11,"is_radar":true,"status":"active","student_rollcalls":[{"student_id":1,"status":"absent"}]}]}"""),
                 jsonResponse("{}"),
                 if (failCountRead) jsonResponse("{}", 503) else jsonResponse("""{"rollcalls":[{"id":11,"student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}]}"""))
-            val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
+            val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
             model.loginAccount("a"); advanceUntilIdle()
             model.openCourse(Course("9", "课程")); advanceUntilIdle()
             model.submit("11"); advanceUntilIdle()
@@ -239,7 +334,7 @@ class AppModelTests {
     @Test fun renewalThatAlsoExpiresClearsAuthenticatedState() = runTest(dispatcher) {
         val store = MemoryStore(); val logins = mutableListOf<String>()
         val t = QueueTransport(jsonResponse("", 401), jsonResponse("", 401))
-        val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), logins))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(t), logins))
         model.loginAccount("b"); advanceUntilIdle()
         model.enterCourses(); advanceUntilIdle()
         assertEquals(listOf("b", "b"), logins)
@@ -260,7 +355,7 @@ class AppModelTests {
             jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":2,"status":"absent"}]}]}"""),
             jsonResponse("{}"),
             jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":2,"status":"on_call_fine"}]}]}"""))
-        val model = AppModel(store, dispatcher, auth(store, TronclassClient(t) {}, logins))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(t) {}, logins))
         model.loginAccount("b"); advanceUntilIdle()
         model.enterCourses(); advanceUntilIdle(); model.openCourse(Course("9", "课程")); advanceUntilIdle()
         model.submit("11"); advanceUntilIdle()
@@ -281,7 +376,7 @@ class AppModelTests {
             }
         }
         val t = submissionTransport()
-        val model = AppModel(flakyStore, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
+        val model = AppModel(flakyStore, dispatcher, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
         model.enterCourses(); advanceUntilIdle(); model.openCourse(Course("9", "课程")); advanceUntilIdle()
         model.submit("11"); advanceUntilIdle()
         assertTrue(t.requests.none { it.method == "PUT" })
@@ -299,7 +394,7 @@ class AppModelTests {
                 return base.send(request)
             }
         }
-        val model = AppModel(store, dispatcher, auth(store, TronclassClient(transport), mutableListOf()))
+        val model = AppModel(store, dispatcher, dispatcher, auth(store, TronclassClient(transport), mutableListOf()))
         model.enterCourses(); advanceUntilIdle(); model.openCourse(Course("9", "课程")); runCurrent()
         assertTrue(model.state.value.busy)
         assertTrue(model.back()); gate.complete(Unit); advanceUntilIdle()

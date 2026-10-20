@@ -43,7 +43,7 @@ class ModelTests {
         assertFalse(hydrated.isActive)
         assertEquals("finished", hydrated.activityStatus); assertEquals("on_call_fine", hydrated.personalStatus)
         assertEquals(AttendanceCounts(0, 0), hydrated.attendanceCounts)
-        assertEquals(hydrated, hydrated.withListDetails(Attendance("1")))
+        assertSame(hydrated, hydrated.withListDetails(Attendance("1")))
     }
     @Test fun mergingDetailsAcceptsZeroCountsAndKeepsKnownCountsWhenMissing() {
         val history = Attendance("1", activityStatus = "finished", personalStatus = "on_call_late", attendanceCounts = AttendanceCounts(2, 3))
@@ -186,6 +186,20 @@ class ClientTests {
         assertEquals("active", rows[0].activityStatus); assertEquals("absent", rows[0].personalStatus)
         assertEquals("finished", rows[1].activityStatus); assertNull(rows[1].personalStatus)
         assertEquals("/api/timetable_rollcalls?course_ids=9&rollcall_date=2026-10-08", transport.requests.single().path)
+    }
+    @Test fun timetablePrimaryIdOverridesAlternateIdWithoutChangingRosterResults() = runTest {
+        val body = """{"rollcalls":[{"id":11,"rollcall_id":99,"course_id":9,"status":"active",
+            "student_rollcalls":[{"student_id":1,"status":"absent"},
+                {"student_id":2,"status":"on_call_fine"},{"student_id":3,"status":"on_call_late"}]}]}"""
+        val client = TronclassClient(QueueTransport(jsonResponse(body), jsonResponse(body)))
+        for (record in listOf(client.detail("9", "11", "2026-10-08", "1"),
+            client.details("9", "2026-10-08", "1").single())) {
+            assertEquals("11", record.id)
+            assertEquals("active", record.activityStatus)
+            assertEquals("absent", record.personalStatus)
+            assertEquals(AttendanceCounts(2, 3), record.attendanceCounts)
+            assertFalse(record.isAnswered)
+        }
     }
     @Test fun timetableRollcallsFiltersOtherCoursesAndMatchesTargetId() = runTest {
         val body = """{"rollcalls":[

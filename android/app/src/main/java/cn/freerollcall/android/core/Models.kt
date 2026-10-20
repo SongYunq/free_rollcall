@@ -116,9 +116,13 @@ data class Attendance(
             attendanceCounts = other.attendanceCounts ?: attendanceCounts)
     }
     // Supplementary list reads must not change the history row's attendance result.
-    fun withListDetails(detail: Attendance) = copy(numberCode = detail.numberCode ?: numberCode,
-        attendanceCounts = detail.attendanceCounts ?: attendanceCounts,
-        kind = if (kind == AttendanceKind.UNKNOWN) detail.kind else kind)
+    fun withListDetails(detail: Attendance): Attendance {
+        val code = detail.numberCode ?: numberCode
+        val counts = detail.attendanceCounts ?: attendanceCounts
+        val resolvedKind = if (kind == AttendanceKind.UNKNOWN) detail.kind else kind
+        if (code == numberCode && counts == attendanceCounts && resolvedKind == kind) return this
+        return copy(numberCode = code, attendanceCounts = counts, kind = resolvedKind)
+    }
     companion object {
         val activityStatuses = setOf("active", "finished", "ended", "closed")
         private val endedStatuses = setOf("finished", "ended", "closed")

@@ -17,29 +17,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cn.freerollcall.android.app.*
 import cn.freerollcall.android.core.displayTime
+import cn.freerollcall.android.storage.AttendanceLog
 import cn.freerollcall.android.storage.LogResult
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun LogsScreen(model: AppModel, state: UiState) {
     var selectedId by remember { mutableStateOf<String?>(null) }
+    val logs = state.logs
     PageHeader("本地日志")
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 24.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
-        if (state.logs.isEmpty()) item { EmptyState("还没有签到记录", "签到操作的结果会保存在本机，离线也能查看") }
-        items(state.logs, key = { it.id }) { log ->
-            Column(Modifier.fillMaxWidth().clickable { selectedId = log.id }.testTag("log-${log.id}").padding(vertical = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                    Text(log.courseName, Modifier.weight(1f), fontWeight = FontWeight.Medium, fontSize = 16.sp)
-                    Spacer(Modifier.width(12.dp))
-                    Text(log.result.title, color = if (log.result == LogResult.FAILURE) Danger else Secondary, fontSize = 12.sp)
-                }
-                Text(displayTime(log.createdAt), color = Secondary, fontSize = 12.sp)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(log.kind.title, fontSize = 14.sp); Text(log.codeText, fontSize = 14.sp)
-                }
-                Text(if (log.accountNote.isEmpty()) log.username else "${log.accountNote} · ${log.username}", color = Secondary, fontSize = 12.sp)
-            }
-            HorizontalDivider(color = Line)
+        if (logs.isEmpty()) item(key = "logs-empty", contentType = "empty") { EmptyState("还没有签到记录", "签到操作的结果会保存在本机，离线也能查看") }
+        items(logs, key = { it.id }, contentType = { "log" }) { log ->
+            LogRow(log) { selectedId = log.id }
         }
     }
     selectedId?.let { id -> state.logs.firstOrNull { it.id == id }?.let { log ->
@@ -62,4 +51,24 @@ import cn.freerollcall.android.storage.LogResult
             }
         }
     } }
+}
+@Composable private fun LogRow(log: AttendanceLog, click: () -> Unit) {
+    val timeText = remember(log.createdAt) { displayTime(log.createdAt) }
+    val accountText = remember(log.accountNote, log.username) {
+        if (log.accountNote.isEmpty()) log.username else "${log.accountNote} · ${log.username}"
+    }
+    Column(Modifier.fillMaxWidth().clickable(onClick = click).testTag("log-${log.id}").padding(vertical = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            Text(log.courseName, Modifier.weight(1f), fontWeight = FontWeight.Medium, fontSize = 16.sp)
+            Spacer(Modifier.width(12.dp))
+            Text(log.result.title, color = if (log.result == LogResult.FAILURE) Danger else Secondary, fontSize = 12.sp)
+        }
+        Text(timeText, color = Secondary, fontSize = 12.sp)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(log.kind.title, fontSize = 14.sp); Text(log.codeText, fontSize = 14.sp)
+        }
+        Text(accountText, color = Secondary, fontSize = 12.sp)
+    }
+    HorizontalDivider(color = Line)
 }

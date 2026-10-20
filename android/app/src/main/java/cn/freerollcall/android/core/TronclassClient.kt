@@ -70,9 +70,10 @@ class TronclassClient(val transport: Transport, private val wait: suspend (Long)
     }
     private fun parseDetail(item: JsonElement, studentId: String): Attendance {
         val id = item.field("id").text() ?: item.field("rollcall_id").text() ?: throw RollcallException.malformed()
-        val fields = item.asJsonObject.deepCopy().apply { addProperty("rollcall_id", id) }
         val own = item.field("student_rollcalls").rows()?.firstOrNull { it.field("student_id").text() == studentId }
-        return Attendance.parse(fields).copy(personalStatus = own?.field("status").text())
+        // Parsing only reads the JSON. Do not duplicate the entire class roster to
+        // normalize an ID; apply the timetable's ID precedence to the result.
+        return Attendance.parse(item).copy(id = id, personalStatus = own?.field("status").text())
     }
     suspend fun detail(id: String, studentId: String): Attendance =
         detail("1", id, rollcallDate(null), studentId)

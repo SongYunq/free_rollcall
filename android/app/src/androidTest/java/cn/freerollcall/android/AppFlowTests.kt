@@ -15,6 +15,7 @@ import org.junit.Assert.*
 import org.junit.runner.RunWith
 import java.security.KeyStore
 import android.os.Looper
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import java.util.concurrent.CopyOnWriteArrayList
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -22,7 +23,9 @@ import androidx.compose.ui.semantics.SemanticsProperties
 // Fixtures are only compiled into the test APK; the installed app always uses real services.
 private class FixtureTransport : Transport {
     val requests = CopyOnWriteArrayList<ApiRequest>()
+    val cancelledPaths = CopyOnWriteArrayList<String>()
     var courseCount = 1
+    var extraHistoryRows = 0
     var includeAttendanceCounts = true
     @Volatile private var answered = false
     @Volatile private var pausedPath: String? = null
@@ -31,14 +34,21 @@ private class FixtureTransport : Transport {
     fun resume() { pausedPath = null; gate.complete(Unit) }
     override suspend fun send(request: ApiRequest): ApiResponse {
         requests += request
-        if (request.path == pausedPath) gate.await()
+        if (request.path == pausedPath) try { gate.await() }
+        catch (error: CancellationException) { cancelledPaths += request.path; throw error }
         return ApiResponse(200, when {
             request.path == "/api/current-semester-info" -> """{"semester":{"id":1},"academic_year":{"id":1}}"""
             request.path == "/api/my-courses" -> (0 until courseCount).joinToString(
                 prefix = """{"courses":[""", postfix = """],"pages":1}""") { index ->
                 """{"id":${9 + index},"name":"本学期示例课程${if (index == 0) "" else index}"}"""
             }
-            request.path.contains("/student/1/rollcalls") -> """{"rollcalls":[{"id":701,"is_number":true,"rollcall_status":"active","status":"absent","rollcall_time":"2026-10-05 08:00:00"},{"id":703,"is_number":true,"rollcall_status":"finished","status":"on_call_fine","rollcall_time":"2026-10-04 08:00:00"},{"id":704,"is_number":true,"rollcall_status":"finished","status":"absent","rollcall_time":"2026-10-03 08:00:00"}],"pages":1}"""
+            request.path.contains("/student/1/rollcalls") -> (listOf(
+                """{"id":701,"is_number":true,"rollcall_status":"active","status":"absent","rollcall_time":"2026-10-05 08:00:00"}""",
+                """{"id":703,"is_number":true,"rollcall_status":"finished","status":"on_call_fine","rollcall_time":"2026-10-04 08:00:00"}""",
+                """{"id":704,"is_number":true,"rollcall_status":"finished","status":"absent","rollcall_time":"2026-10-03 08:00:00"}"""
+            ) + (0 until extraHistoryRows).map { index ->
+                """{"id":${800 + index},"is_number":true,"rollcall_status":"finished","status":"on_call_fine","rollcall_time":"2026-10-03 08:00:00"}"""
+            }).joinToString(prefix = """{"rollcalls":[""", postfix = """],"pages":1}""")
             request.path == "/api/radar/rollcalls" -> """{"rollcalls":[]}"""
             request.path.endsWith("/answer_number_rollcall") -> { answered = true; "{}" }
             request.path.startsWith("/api/timetable_rollcalls") -> {
@@ -96,7 +106,7 @@ class AppFlowTests {
     }
     @After fun after() {
         transport.resume()
-        compose.waitUntil(timeoutMillis = 5_000) { !model.state.value.busy }
+        compose.waitUntil(timeoutMillis = 5_000) { !model.state.value.busy && !model.state.value.historyEnriching }
         store.close(); context.deleteDatabase(name)
         KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry(alias) }
     }
@@ -113,12 +123,15 @@ class AppFlowTests {
         compose.onNodeWithContentDescription("本地日志").performClick()
         compose.onNodeWithText("还没有签到记录").assertIsDisplayed()
     }
-    private fun enterHistory() {
+    private fun enterHistory(waitForDetails: Boolean = true) {
         compose.onNodeWithTag("enter-courses").performClick()
         compose.waitUntil(timeoutMillis = 5_000) { model.state.value.courses.isNotEmpty() && !model.state.value.busy }
         compose.onNodeWithText("加载更多课程").assertDoesNotExist()
         compose.onNodeWithTag("course-9").performClick()
-        compose.waitUntil(timeoutMillis = 5_000) { model.state.value.records.size == 3 && !model.state.value.busy }
+        compose.waitUntil(timeoutMillis = 5_000) {
+            model.state.value.records.size == 3 + transport.extraHistoryRows && !model.state.value.busy &&
+                (!waitForDetails || !model.state.value.historyEnriching)
+        }
     }
     @Test fun historyCodesAreVisibleAndAnsweredRowsStayDistinct() {
         enterHistory()
@@ -141,13 +154,40 @@ class AppFlowTests {
             .assert(hasAnyDescendant(hasText("—/—")))
         compose.onAllNodesWithText("0/0", useUnmergedTree = true).assertCountEquals(0)
     }
+    @Test fun slowAttendanceCountsAllowScrollingAndBackWithoutWaiting() {
+        val slowPath = "/api/timetable_rollcalls?course_ids=9&rollcall_date=2026-10-05"
+        transport.extraHistoryRows = 40
+        transport.pause(slowPath)
+        enterHistory(waitForDetails = false)
+        compose.waitUntil(timeoutMillis = 5_000) {
+            model.state.value.historyEnriching && transport.requests.any { it.path == slowPath }
+        }
+        compose.onNodeWithTag("attendance-701").assertIsEnabled()
+        compose.onNodeWithTag("home-list-history").performScrollToNode(hasTestTag("attendance-839"))
+        compose.onNodeWithTag("attendance-839").assertIsDisplayed().assertIsEnabled()
+        assertTrue(model.state.value.historyEnriching)
+        assertFalse(model.state.value.busy)
+        compose.onNodeWithContentDescription("返回").assertIsEnabled().performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            model.state.value.page == HomePage.COURSES && slowPath in transport.cancelledPaths
+        }
+        transport.resume()
+        compose.waitForIdle()
+        compose.onNodeWithTag("course-9").assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals(HomePage.COURSES, model.state.value.page)
+            assertTrue(model.state.value.records.isEmpty())
+            assertFalse(model.state.value.historyEnriching)
+            assertFalse(model.state.value.busy)
+        }
+    }
     @Test fun returningFromHistoryRestoresCourseListPosition() {
         transport.courseCount = 35
         compose.onNodeWithTag("enter-courses").performClick()
         compose.waitUntil(timeoutMillis = 5_000) { !model.state.value.busy && model.state.value.courses.size == 35 }
         compose.onNodeWithTag("home-list-courses").performScrollToNode(hasTestTag("course-33"))
         compose.onNodeWithTag("course-33").performClick()
-        compose.waitUntil(timeoutMillis = 5_000) { !model.state.value.busy && model.state.value.records.size == 3 }
+        compose.waitUntil(timeoutMillis = 5_000) { !model.state.value.busy && !model.state.value.historyEnriching && model.state.value.records.size == 3 }
         compose.onNodeWithTag("attendance-701").assertIsDisplayed()
         compose.onNodeWithContentDescription("返回").performClick()
         compose.onNodeWithTag("course-33").assertIsDisplayed()
@@ -197,7 +237,7 @@ class AppFlowTests {
         transport.resume()
         compose.waitUntil(timeoutMillis = 5_000) { !model.state.value.busy && model.state.value.courses.isNotEmpty() }
         compose.onNodeWithTag("course-9").performClick()
-        compose.waitUntil(timeoutMillis = 5_000) { !model.state.value.busy && model.state.value.records.size == 3 }
+        compose.waitUntil(timeoutMillis = 5_000) { !model.state.value.busy && !model.state.value.historyEnriching && model.state.value.records.size == 3 }
         transport.pause("/api/timetable_rollcalls?course_ids=9&rollcall_date=2026-10-04")
         compose.onNodeWithTag("attendance-703").performClick()
         compose.waitUntil(timeoutMillis = 5_000) { model.state.value.busy }
