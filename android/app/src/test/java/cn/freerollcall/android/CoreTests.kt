@@ -34,11 +34,24 @@ class ModelTests {
         assertFalse(active.copy(personalStatus = "present").canSubmit)
         assertFalse(active.copy(endTime = Instant.EPOCH).isActive)
     }
-    @Test fun historyCodeHydrationPreservesBothStates() {
-        val history = Attendance("1", kind = AttendanceKind.NUMBER, activityStatus = "finished", personalStatus = "on_call_fine", isExpired = true)
-        val hydrated = history.withCode(Attendance("1", numberCode = "0012", activityStatus = "active", personalStatus = "absent", isExpired = false))
+    @Test fun historyListDetailsUpdateCountsAndCodeWithoutChangingEitherState() {
+        val history = Attendance("1", kind = AttendanceKind.NUMBER, activityStatus = "finished", personalStatus = "on_call_fine", isExpired = true,
+            attendanceCounts = AttendanceCounts(2, 3))
+        val hydrated = history.withListDetails(Attendance("1", numberCode = "0012", activityStatus = "active", personalStatus = "absent", isExpired = false,
+            attendanceCounts = AttendanceCounts(0, 0)))
         assertEquals("0012", hydrated.numberCode); assertEquals("已签到", hydrated.stateText)
         assertFalse(hydrated.isActive)
+        assertEquals("finished", hydrated.activityStatus); assertEquals("on_call_fine", hydrated.personalStatus)
+        assertEquals(AttendanceCounts(0, 0), hydrated.attendanceCounts)
+        assertEquals(hydrated, hydrated.withListDetails(Attendance("1")))
+    }
+    @Test fun mergingDetailsAcceptsZeroCountsAndKeepsKnownCountsWhenMissing() {
+        val history = Attendance("1", activityStatus = "finished", personalStatus = "on_call_late", attendanceCounts = AttendanceCounts(2, 3))
+        val merged = history.merge(Attendance("1", attendanceCounts = AttendanceCounts(0, 0)))
+        assertEquals(AttendanceCounts(0, 0), merged.attendanceCounts)
+        assertEquals("finished", merged.activityStatus); assertEquals("on_call_late", merged.personalStatus)
+        assertEquals(merged, merged.merge(Attendance("1")))
+        assertEquals(history, history.merge(Attendance("2", attendanceCounts = AttendanceCounts(0, 0))))
     }
     @Test fun parsesNumericIdsAndCodeWithoutLosingLeadingZeros() {
         val row = Attendance.parse(parseJson("""{"rollcall_id":3,"number_code":"0007","is_number":true,"status":"absent","rollcall_status":"finished"}"""))
@@ -66,6 +79,15 @@ class ModelTests {
         assertEquals("2026-10-05 08:00:00", displayTime(Instant.parse("2026-10-05T00:00:00Z")))
         assertNull(parseTime("bad date"))
     }
+    @Test fun timetableQueryDatesUseUtcAtTheSchoolMorningBoundary() {
+        for ((startedAt, expected) in listOf(
+            "2026-10-08 07:59:59" to "2026-10-07",
+            "2026-10-08 08:00:00" to "2026-10-08",
+            "2026-10-07T23:56:23Z" to "2026-10-07",
+            "2026-01-01 00:00:00" to "2025-12-31")) {
+            assertEquals(startedAt, expected, Attendance("1", rawDate = startedAt).queryDate)
+        }
+    }
     @Test fun responseParsingRejectsEmptyAndNonJsonErrorBodies() {
         for (body in listOf("", "  ", "InternalError", "{success:true}")) {
             try { parseJson(body); fail("Expected malformed response: $body") }
@@ -73,6 +95,54 @@ class ModelTests {
         }
         assertTrue(parseJson("null").isJsonNull)
         assertEquals("页面结果", parseJson("\"页面结果\"").text())
+    }
+}
+class AttendanceCountsTests {
+    private fun counts(students: String): AttendanceCounts? = AttendanceCounts.parse(parseJson("""{"student_rollcalls":$students}"""))
+
+    @Test fun countsOnlyExactSignedStatusesIncludingLateAttendance() {
+        val statuses = listOf("on_call", "on_call_fine", "on_call_late", "present", "attended", "late",
+            "absent", "leave", "unrecognized", "not_on_call", "on_call_failed")
+        val rows = statuses.mapIndexed { index, status -> """{"student_id":$index,"status":"$status"}""" }
+        assertEquals(AttendanceCounts(6, 11), counts(rows.joinToString(prefix = "[", postfix = "]")))
+    }
+    @Test fun deduplicatesStudentsAcrossRecordIdsAndDoesNotGuessConflictingStatuses() {
+        val rows = listOf(
+            """{"student_id":123,"id":1,"status":"on_call"}""",
+            """{"student_id":"123","id":2,"status":"on_call"}""",
+            """{"student_id":2,"status":"on_call"}""", """{"student_id":2,"status":"absent"}""",
+            """{"student_id":3,"status":"present"}""", """{"student_id":3,"status":"late"}""")
+        assertEquals(AttendanceCounts(1, 3), counts(rows.joinToString(prefix = "[", postfix = "]")))
+        assertEquals(AttendanceCounts(1, 3), counts(rows.reversed().joinToString(prefix = "[", postfix = "]")))
+    }
+    @Test fun missingStudentIdsFallBackToRecordIdsThenIndividualRows() {
+        assertEquals(AttendanceCounts(4, 5), counts("""[
+            {"id":12,"status":"absent"},{"id":"12","status":"absent"},
+            {"status":"on_call"},{"status":"on_call"},{"student_id":12,"status":"late"},
+            {"student_id":true,"id":77,"status":"present"},{"student_id":" ","id":"77","status":"present"}
+        ]"""))
+    }
+    @Test fun normalizesStatusAndFallsBackOnlyWhenPrimaryStatusIsMissingOrNull() {
+        assertEquals(AttendanceCounts(3, 7), counts("""[
+            {"student_id":1,"status":" ON_CALL "},{"student_id":2,"rollcall_status":"LaTe"},
+            {"student_id":3,"status":null,"rollcall_status":"present"},
+            {"student_id":4,"status":"","rollcall_status":"on_call"},
+            {"student_id":5,"status":123,"rollcall_status":"on_call"},
+            {"student_id":6,"status":true},{"student_id":7}
+        ]"""))
+        assertEquals(AttendanceCounts(1, 1), counts("""[
+            {"student_id":1,"status":" ON_CALL "},{"student_id":"1","status":"on_call"}
+        ]"""))
+    }
+    @Test fun malformedOrMissingRostersAreUnknownWhileAnEmptyRosterIsZero() {
+        for (body in listOf("null", "[]", "{}", """{"student_rollcalls":null}""",
+            """{"student_rollcalls":{}}""", """{"student_rollcalls":"[]"}""",
+            """{"student_rollcalls":[null]}""", """{"student_rollcalls":[1]}""",
+            """{"student_rollcalls":[{},false]}""")) {
+            assertNull(body, AttendanceCounts.parse(parseJson(body)))
+        }
+        assertEquals(AttendanceCounts(0, 0), counts("[]"))
+        assertEquals(AttendanceCounts(0, 2), counts("""[{"student_id":1},{"student_id":2,"status":"unknown"}]"""))
     }
 }
 class ClientTests {
@@ -94,8 +164,28 @@ class ClientTests {
     @Test fun detailUsesOnlyCurrentStudentAndDoesNotBorrowClassmateStatus() = runTest {
         val body = """{"rollcalls":[{"id":11,"is_number":true,"number_code":"0123","status":"finished","student_rollcalls":[{"student_id":2,"status":"on_call_fine"},{"student_id":1,"status":"absent"}]}]}"""
         val client = TronclassClient(QueueTransport(jsonResponse(body), jsonResponse(body)))
-        assertEquals("absent", client.detail("9", "11", "2026-10-08", "1").personalStatus)
-        assertNull(client.detail("9", "11", "2026-10-08", "99").personalStatus)
+        val own = client.detail("9", "11", "2026-10-08", "1")
+        assertEquals("absent", own.personalStatus)
+        assertEquals(AttendanceCounts(1, 2), own.attendanceCounts)
+        val notOnRoster = client.detail("9", "11", "2026-10-08", "99")
+        assertNull(notOnRoster.personalStatus)
+        assertEquals(AttendanceCounts(1, 2), notOnRoster.attendanceCounts)
+    }
+    @Test fun detailsReadsAllCountsForTheRequestedCourseWithOneRequest() = runTest {
+        val transport = QueueTransport(jsonResponse("""{"rollcalls":[
+            {"id":10,"course":{"id":999},"student_rollcalls":[]},
+            {"id":11,"course":{"id":9},"status":"active","student_rollcalls":[
+                {"student_id":1,"status":"absent"},{"student_id":2,"status":"on_call_late"}]},
+            {"id":12,"course_id":9,"status":"finished","student_rollcalls":[]},
+            {"rollcall_id":13,"course_id":9,"student_rollcalls":null},
+            {"id":14,"course_id":9,"student_rollcalls":[null]}
+        ]}"""))
+        val rows = TronclassClient(transport).details("9", "2026-10-08", "1")
+        assertEquals(listOf("11", "12", "13", "14"), rows.map { it.id })
+        assertEquals(listOf(AttendanceCounts(1, 2), AttendanceCounts(0, 0), null, null), rows.map { it.attendanceCounts })
+        assertEquals("active", rows[0].activityStatus); assertEquals("absent", rows[0].personalStatus)
+        assertEquals("finished", rows[1].activityStatus); assertNull(rows[1].personalStatus)
+        assertEquals("/api/timetable_rollcalls?course_ids=9&rollcall_date=2026-10-08", transport.requests.single().path)
     }
     @Test fun timetableRollcallsFiltersOtherCoursesAndMatchesTargetId() = runTest {
         val body = """{"rollcalls":[

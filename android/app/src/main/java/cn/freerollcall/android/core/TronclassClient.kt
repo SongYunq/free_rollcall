@@ -62,6 +62,14 @@ class TronclassClient(val transport: Transport, private val wait: suspend (Long)
             val rid = it.field("id").text() ?: it.field("rollcall_id").text()
             rid == id
         } ?: throw RollcallException.message("该日期的查询结果中未找到本次签到")
+        return parseDetail(item, studentId)
+    }
+    suspend fun details(courseId: String, date: String, studentId: String): List<Attendance> {
+        validateId(studentId)
+        return timetableRollcalls(courseId, date).map { parseDetail(it, studentId) }
+    }
+    private fun parseDetail(item: JsonElement, studentId: String): Attendance {
+        val id = item.field("id").text() ?: item.field("rollcall_id").text() ?: throw RollcallException.malformed()
         val fields = item.asJsonObject.deepCopy().apply { addProperty("rollcall_id", id) }
         val own = item.field("student_rollcalls").rows()?.firstOrNull { it.field("student_id").text() == studentId }
         return Attendance.parse(fields).copy(personalStatus = own?.field("status").text())

@@ -75,21 +75,79 @@ class AppModelTests {
     @Test fun autoCodesPreserveAnsweredAndOnlyExplicitAbsence() = runTest(dispatcher) {
         val store = MemoryStore(); val logins = mutableListOf<String>()
         val t = transportForHistory(listOf(
-            jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":1,"status":"absent"}]}]}"""),
-            jsonResponse("""{"rollcalls":[{"id":12,"is_number":true,"number_code":"0013","status":"active","student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}]}""")))
+            jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":1,"status":"absent"}]},{"id":12,"is_number":true,"number_code":"0013","status":"active","student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}]}""")))
         val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), logins))
         model.enterCourses(); advanceUntilIdle(); model.openCourse(Course("9", "课程")); advanceUntilIdle()
         assertEquals(listOf("已签到", "缺勤"), model.state.value.records.map { it.stateText })
         assertEquals(listOf("0012", "0013"), model.state.value.records.map { it.numberCode })
+        assertEquals(listOf(AttendanceCounts(0, 1), AttendanceCounts(1, 1)), model.state.value.records.map { it.attendanceCounts })
+        assertEquals(1, t.requests.count { it.path.startsWith("/api/timetable_rollcalls") })
         assertTrue(store.logs().isEmpty()); assertTrue(t.requests.none { it.method == "PUT" })
     }
     @Test fun partialCodeFailureKeepsRowsAndAllowsRefresh() = runTest(dispatcher) {
-        val store = MemoryStore(); val t = transportForHistory(listOf(jsonResponse("{}", 500), jsonResponse("""{"rollcalls":[{"id":12,"is_number":true,"number_code":"0007"}]}""")))
+        val store = MemoryStore(); val t = transportForHistory(listOf(jsonResponse("""{"rollcalls":[{"id":12,"is_number":true,"number_code":"0007","student_rollcalls":[]}]}""")))
         val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
         model.enterCourses(); advanceUntilIdle(); model.openCourse(Course("9", "课程")); advanceUntilIdle()
         assertEquals("已签到", model.state.value.records[0].stateText)
         assertEquals("0007", model.state.value.records[1].numberCode)
+        assertNull(model.state.value.records[0].attendanceCounts)
+        assertEquals(AttendanceCounts(0, 0), model.state.value.records[1].attendanceCounts)
         assertTrue(model.state.value.error!!.contains("下拉刷新")); assertFalse(model.state.value.busy)
+    }
+    @Test fun countsLoadForKnownCodesRadarAndOtherKindsInOneDailyRead() = runTest(dispatcher) {
+        val store = MemoryStore()
+        val t = QueueTransport(
+            jsonResponse("""{"rollcalls":[
+                {"id":11,"is_number":true,"number_code":"0012","status":"on_call_fine","rollcall_status":"finished","rollcall_time":"2026-10-08 08:00:00"},
+                {"id":12,"is_radar":true,"status":"absent","rollcall_status":"finished","rollcall_time":"2026-10-08 09:00:00"},
+                {"id":13,"is_radar":false,"is_number":false,"rollcall_status":"finished","rollcall_time":"2026-10-08 10:00:00"},
+                {"id":14,"rollcall_status":"finished","rollcall_time":"2026-10-08 11:00:00"}
+            ],"pages":1}"""),
+            jsonResponse("""{"rollcalls":[]}"""),
+            jsonResponse("""{"rollcalls":[
+                {"id":11,"status":"active","student_rollcalls":[{"student_id":1,"status":"absent"},{"student_id":2,"status":"on_call_late"}]},
+                {"id":12,"student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]},
+                {"id":13,"student_rollcalls":[]},
+                {"id":14,"is_radar":true,"student_rollcalls":[{"student_id":1,"status":"absent"}]}
+            ]}"""))
+        val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
+        model.loginAccount("a"); advanceUntilIdle()
+        model.openCourse(Course("9", "课程")); advanceUntilIdle()
+        val rows = model.state.value.records.associateBy { it.id }
+        assertEquals(AttendanceCounts(1, 2), rows["11"]!!.attendanceCounts)
+        assertEquals(AttendanceCounts(1, 1), rows["12"]!!.attendanceCounts)
+        assertEquals(AttendanceCounts(0, 0), rows["13"]!!.attendanceCounts)
+        assertEquals(AttendanceCounts(0, 1), rows["14"]!!.attendanceCounts)
+        assertEquals("0012", rows["11"]!!.numberCode)
+        assertEquals("已签到", rows["11"]!!.stateText)
+        assertEquals("缺勤", rows["12"]!!.stateText)
+        assertEquals(AttendanceKind.RADAR, rows["14"]!!.kind)
+        assertEquals(1, t.requests.count { it.path.startsWith("/api/timetable_rollcalls") })
+        assertNull(model.state.value.error)
+        assertTrue(t.requests.all { it.method == "GET" })
+    }
+    @Test fun countFailureKeepsHistoryAndRefreshRetriesWithCurrentCounts() = runTest(dispatcher) {
+        val store = MemoryStore()
+        val history = jsonResponse("""{"rollcalls":[{"id":11,"is_radar":true,"status":"absent","rollcall_status":"finished","rollcall_time":"2026-10-08 07:00:00"}],"pages":1}""")
+        val active = jsonResponse("""{"rollcalls":[]}""")
+        val t = QueueTransport(history, active, jsonResponse("{}", 503), history, active,
+            jsonResponse("""{"rollcalls":[{"id":11,"student_rollcalls":[{"student_id":1,"status":"on_call_fine"},{"student_id":2,"status":"absent"}]}]}"""),
+            history, active, jsonResponse("""{"rollcalls":[{"id":11,"student_rollcalls":[{"student_id":1,"status":"on_call_fine"},{"student_id":2,"status":"on_call_late"}]}]}"""))
+        val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
+        model.loginAccount("a"); advanceUntilIdle()
+        model.openCourse(Course("9", "课程")); advanceUntilIdle()
+        assertNull(model.state.value.records.single().attendanceCounts)
+        assertEquals("缺勤", model.state.value.records.single().stateText)
+        assertTrue(model.state.value.error!!.contains("人数未获取"))
+        model.refreshHistory(); advanceUntilIdle()
+        assertEquals(AttendanceCounts(1, 2), model.state.value.records.single().attendanceCounts)
+        assertNull(model.state.value.error)
+        model.refreshHistory(); advanceUntilIdle()
+        assertEquals(AttendanceCounts(2, 2), model.state.value.records.single().attendanceCounts)
+        assertNull(model.state.value.error)
+        assertTrue(t.requests.filter { it.path.startsWith("/api/timetable_rollcalls") }
+            .all { it.path == "/api/timetable_rollcalls?course_ids=9&rollcall_date=2026-10-07" })
+        assertTrue(t.requests.all { it.method == "GET" })
     }
     @Test fun accountChangeIsBlockedWhileLoading() = runTest(dispatcher) {
         val waiting = CompletableDeferred<AuthResult>()
@@ -145,7 +203,7 @@ class AppModelTests {
         val t = QueueTransport(
             jsonResponse("""{"semester":{"id":1},"academic_year":{"id":1}}"""),
             jsonResponse("""{"courses":[{"id":9,"name":"课程"}],"pages":1}"""),
-            jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"absent","rollcall_status":"active","rollcall_time":"2026-10-08 08:00:00"}],"pages":1}"""),
+            jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"absent","rollcall_status":"active","rollcall_time":"2026-10-08 08:00:00","student_rollcalls":[]}],"pages":1}"""),
             jsonResponse("""{"rollcalls":[]}"""),
             jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"active","student_rollcalls":[{"student_id":1,"status":"absent"}]}]}"""),
             jsonResponse("{}"),
@@ -156,6 +214,27 @@ class AppModelTests {
         assertEquals(1, store.logs().size); assertEquals(LogResult.SUCCESS, store.logs().single().result)
         assertEquals(1, t.requests.count { it.method == "PUT" })
         assertEquals("0012", store.logs().single().code); assertEquals("已签到", model.state.value.records.single().stateText)
+        assertEquals(AttendanceCounts(1, 1), model.state.value.records.single().attendanceCounts)
+    }
+    @Test fun radarSuccessRefreshesCountsWithoutDowngradingSuccessWhenCountReadFails() = runTest(dispatcher) {
+        for (failCountRead in listOf(false, true)) {
+            val store = MemoryStore()
+            val t = QueueTransport(
+                jsonResponse("""{"rollcalls":[{"id":11,"is_radar":true,"status":"absent","rollcall_status":"active","rollcall_time":"2026-10-08 08:00:00","student_rollcalls":[{"student_id":1,"status":"absent"}]}],"pages":1}"""),
+                jsonResponse("""{"rollcalls":[]}"""),
+                jsonResponse("""{"rollcalls":[{"id":11,"is_radar":true,"status":"active","student_rollcalls":[{"student_id":1,"status":"absent"}]}]}"""),
+                jsonResponse("{}"),
+                if (failCountRead) jsonResponse("{}", 503) else jsonResponse("""{"rollcalls":[{"id":11,"student_rollcalls":[{"student_id":1,"status":"on_call_fine"}]}]}"""))
+            val model = AppModel(store, dispatcher, auth(store, TronclassClient(t), mutableListOf()))
+            model.loginAccount("a"); advanceUntilIdle()
+            model.openCourse(Course("9", "课程")); advanceUntilIdle()
+            model.submit("11"); advanceUntilIdle()
+            assertEquals(LogResult.SUCCESS, store.logs().single().result)
+            assertEquals("已签到", model.state.value.records.single().stateText)
+            assertEquals(if (failCountRead) null else AttendanceCounts(1, 1), model.state.value.records.single().attendanceCounts)
+            assertEquals(1, t.requests.count { it.method == "PUT" })
+            assertFalse(model.state.value.busy)
+        }
     }
     @Test fun renewalThatAlsoExpiresClearsAuthenticatedState() = runTest(dispatcher) {
         val store = MemoryStore(); val logins = mutableListOf<String>()
@@ -172,7 +251,7 @@ class AppModelTests {
     private fun submissionTransport(vararg tail: ApiResponse) = QueueTransport(
         jsonResponse("""{"semester":{"id":1},"academic_year":{"id":1}}"""),
         jsonResponse("""{"courses":[{"id":9,"name":"课程"}],"pages":1}"""),
-        jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"absent","rollcall_status":"active","rollcall_time":"2026-10-08 08:00:00"}],"pages":1}"""),
+        jsonResponse("""{"rollcalls":[{"id":11,"is_number":true,"number_code":"0012","status":"absent","rollcall_status":"active","rollcall_time":"2026-10-08 08:00:00","student_rollcalls":[]}],"pages":1}"""),
         jsonResponse("""{"rollcalls":[]}"""), *tail)
     @Test fun expiredSubmissionPreflightRenewsSelectedAccountAndWritesOnlyOnce() = runTest(dispatcher) {
         val store = MemoryStore(); val logins = mutableListOf<String>()

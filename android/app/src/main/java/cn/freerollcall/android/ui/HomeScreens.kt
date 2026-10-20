@@ -109,6 +109,7 @@ import cn.freerollcall.android.core.*
                 FieldLine("时间", record.date?.let(::displayTime) ?: record.rawDate ?: "未提供")
                 FieldLine("形式", record.kind.title); FieldLine("状态", record.stateText)
                 FieldLine("签到码", if (record.kind == AttendanceKind.RADAR) "雷达签到" else record.numberCode ?: "未获取")
+                FieldLine("签到人数", record.attendanceCounts?.let { "${it.signedIn}/${it.total}" } ?: "—/—")
                 if (record.canSubmit) Button(onClick = { model.submit(id) }, enabled = !state.busy, modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) { Text("立即签到") }
                 state.message?.let { Message(it) }
                 TextButton(onClick = { detailId = null }, modifier = Modifier.align(Alignment.End)) { Text("完成") }
@@ -130,7 +131,13 @@ import cn.freerollcall.android.core.*
             if (record.kind == AttendanceKind.NUMBER) CodeText("签到码  ${record.numberCode?.takeIf { it.isNotEmpty() } ?: if (loadingCodes) "正在获取…" else "未获取"}")
             if (record.canSubmit) Text(if (submitting) "正在签到…" else "点击此条目签到", fontSize = 12.sp, fontWeight = FontWeight.Medium)
         }
-        if (submitting) { Spacer(Modifier.width(8.dp)); CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp) }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.widthIn(min = 72.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text(record.attendanceCounts?.let { "${it.signedIn}/${it.total}" } ?: "—/—",
+                fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+            Text("已签到/总人数", color = Secondary, fontSize = 10.sp)
+            if (submitting) CircularProgressIndicator(Modifier.padding(top = 3.dp).size(16.dp), strokeWidth = 2.dp)
+        }
     }
     HorizontalDivider(color = Line)
 }

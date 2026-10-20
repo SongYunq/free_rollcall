@@ -206,26 +206,33 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
             change { it.copy(records = records, history = accumulator) }
             // Authenticate before concurrent detail reads; each worker remains read-only.
             val current = ensureSession()
-            val missing = records.filter { it.kind == AttendanceKind.UNKNOWN || it.kind == AttendanceKind.NUMBER && it.numberCode.isNullOrEmpty() }
-            var incomplete = false
-            // Publish one list update per batch, rather than rebuilding for every completed code.
-            for (batch in missing.chunked(4)) {
+            val missing = records.filter { it.attendanceCounts == null || it.kind == AttendanceKind.UNKNOWN ||
+                it.kind == AttendanceKind.NUMBER && it.numberCode.isNullOrEmpty() }
+            var missingCodes = false
+            var missingCounts = false
+            // A timetable read supplies every rollcall that day; share it across rows.
+            val days = missing.groupBy { (it.courseId ?: course.id) to it.queryDate }
+            for (batch in days.entries.chunked(4)) {
                 val details = coroutineScope {
-                    batch.map { row -> async {
+                    batch.map { (day, rows) -> async {
                         try {
-                            val courseId = row.courseId ?: course.id
-                            val date = row.queryDate
-                            row.id to remote { current.client.detail(courseId, row.id, date, current.profile.id) }
+                            val fetched = remote { current.client.details(day.first, day.second, current.profile.id) }.associateBy { it.id }
+                            rows.associate { it.id to fetched[it.id] }
                         }
                         catch (error: CancellationException) { throw error }
-                        catch (_: Exception) { row.id to null }
-                    } }.awaitAll().toMap()
+                        catch (_: Exception) { rows.associate { it.id to null } }
+                    } }.awaitAll().flatMap { it.entries }.associate { it.key to it.value }
                 }
                 if (token != epoch) return
-                if (details.values.any { it == null || it.kind == AttendanceKind.NUMBER && it.numberCode.isNullOrEmpty() }) incomplete = true
-                change { ui -> ui.copy(records = ui.records.map { row -> details[row.id]?.let(row::withCode) ?: row }) }
+                change { ui -> ui.copy(records = ui.records.map { row -> details[row.id]?.let(row::withListDetails) ?: row }) }
+                val updated = state.value.records.filter { it.id in details }
+                if (updated.any { it.kind == AttendanceKind.UNKNOWN || it.kind == AttendanceKind.NUMBER && it.numberCode.isNullOrEmpty() }) missingCodes = true
+                if (updated.any { it.attendanceCounts == null }) missingCounts = true
             }
-            if (token == epoch && incomplete) change { it.copy(error = listOfNotNull(it.error, "部分签到码未获取，可下拉刷新重试").joinToString("；")) }
+            if (token == epoch && (missingCodes || missingCounts)) change {
+                val fields = listOfNotNull("签到码".takeIf { missingCodes }, "人数".takeIf { missingCounts }).joinToString("和")
+                it.copy(error = listOfNotNull(it.error, "部分${fields}未获取，可下拉刷新重试").joinToString("；"))
+            }
         } catch (error: CancellationException) { throw error }
         catch (error: Exception) { if (token == epoch) change { it.copy(error = error.message) } }
     }
@@ -253,6 +260,7 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
         change { it.copy(submitting = id, message = "正在准备签到") }
         val log = storage { store.begin(account, account.verifiedStudentId.orEmpty(), course, original) }
         var attempted = false; var accepted = false
+        var radarResult: Pair<Attendance, Session>? = null
         try {
             reload()
             // A read can renew an expired session before the first submission, but never retry a write.
@@ -278,7 +286,8 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
                 AttendanceKind.RADAR -> {
                     attempted = true
                     if (!remote { current.client.submitRadar(id) }) throw RollcallException.message("雷达签到未完成，请稍后重试")
-                    fresh = fresh.copy(personalStatus = "on_call_fine")
+                    fresh = fresh.copy(personalStatus = "on_call_fine", attendanceCounts = null)
+                    radarResult = fresh to current
                 }
                 else -> throw RollcallException.message("暂不支持此签到形式")
             }
@@ -297,6 +306,15 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
             try { withContext(NonCancellable) { storage { store.update(log.id, result, message) } } } catch (saveError: Exception) { report(saveError) }
             change { it.copy(message = message) }
         } finally { withContext(NonCancellable) { reload() } }
+        // Refresh the class count after a confirmed radar success. A failed read
+        // leaves the count unknown without changing the successful submission log.
+        if (accepted) radarResult?.let { (record, current) ->
+            try {
+                val detail = remote { current.client.detail(record.courseId ?: course.id, id, record.queryDate, current.profile.id) }
+                replace(record.copy(attendanceCounts = detail.attendanceCounts))
+            } catch (error: CancellationException) { throw error }
+            catch (_: Exception) { /* Pull-to-refresh can retrieve the count later. */ }
+        }
     }
     private fun replace(record: Attendance) = change { it.copy(records = it.records.map { row -> if (row.id == record.id) record else row }) }
     fun reconcile(id: String) = operation {

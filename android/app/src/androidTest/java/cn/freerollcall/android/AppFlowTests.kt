@@ -23,6 +23,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 private class FixtureTransport : Transport {
     val requests = CopyOnWriteArrayList<ApiRequest>()
     var courseCount = 1
+    var includeAttendanceCounts = true
     @Volatile private var answered = false
     @Volatile private var pausedPath: String? = null
     @Volatile private var gate = CompletableDeferred<Unit>()
@@ -42,10 +43,14 @@ private class FixtureTransport : Transport {
             request.path.endsWith("/answer_number_rollcall") -> { answered = true; "{}" }
             request.path.startsWith("/api/timetable_rollcalls") -> {
                 val date = request.path.substringAfter("rollcall_date=").substringBefore("&")
-                val status = if (date == "2026-10-04" || answered) "on_call_fine" else "absent"
+                val status = if (date == "2026-10-04" || date == "2026-10-05" && answered) "on_call_fine" else "absent"
                 val active = if (date == "2026-10-05") "active" else "finished"
-                val id = if (date == "2026-10-05") 701 else 703
-                """{"rollcalls":[{"id":$id,"is_number":true,"number_code":"0123","status":"$active","student_rollcalls":[{"student_id":1,"status":"$status"}]}]}"""
+                val id = when (date) { "2026-10-05" -> 701; "2026-10-04" -> 703; else -> 704 }
+                val secondStatus = if (date == "2026-10-03") "absent" else "on_call_fine"
+                val roster = if (includeAttendanceCounts)
+                    """, "student_rollcalls":[{"student_id":1,"status":"$status"},{"student_id":2,"status":"$secondStatus"},{"student_id":3,"status":"absent"}]"""
+                    else ""
+                """{"rollcalls":[{"id":$id,"is_number":true,"number_code":"0123","status":"$active"$roster}]}"""
             }
             else -> error("Unexpected request ${request.path}")
         })
@@ -122,7 +127,19 @@ class AppFlowTests {
         compose.onNodeWithTag("attendance-701", useUnmergedTree = true).assert(hasAnyDescendant(hasText("正在签到")))
         compose.onNodeWithTag("attendance-703", useUnmergedTree = true).assert(hasAnyDescendant(hasText("已签到")))
         compose.onNodeWithTag("attendance-704", useUnmergedTree = true).assert(hasAnyDescendant(hasText("缺勤")))
+        for ((id, counts) in listOf("701" to "1/3", "703" to "2/3", "704" to "0/3")) {
+            compose.onNodeWithTag("attendance-$id", useUnmergedTree = true)
+                .assert(hasAnyDescendant(hasText(counts)))
+                .assert(hasAnyDescendant(hasText("已签到/总人数")))
+        }
         assertTrue(transport.requests.none { it.method == "PUT" })
+    }
+    @Test fun missingAttendanceCountsUseUnknownPlaceholder() {
+        transport.includeAttendanceCounts = false
+        enterHistory()
+        for (id in listOf("701", "703", "704")) compose.onNodeWithTag("attendance-$id", useUnmergedTree = true)
+            .assert(hasAnyDescendant(hasText("—/—")))
+        compose.onAllNodesWithText("0/0", useUnmergedTree = true).assertCountEquals(0)
     }
     @Test fun returningFromHistoryRestoresCourseListPosition() {
         transport.courseCount = 35
@@ -143,6 +160,7 @@ class AppFlowTests {
         assertEquals(LogResult.SUCCESS, store.logs().single().result)
         assertEquals(1, transport.requests.count { it.method == "PUT" })
         compose.onNodeWithTag("attendance-701", useUnmergedTree = true).assert(hasAnyDescendant(hasText("已签到")))
+        compose.onNodeWithTag("attendance-701", useUnmergedTree = true).assert(hasAnyDescendant(hasText("2/3")))
         compose.onNodeWithContentDescription("本地日志").performClick()
         compose.onNodeWithText("成功").assertIsDisplayed()
         compose.onNodeWithText("0123").assertIsDisplayed()
