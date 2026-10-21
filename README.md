@@ -1,8 +1,8 @@
 # free_rollcall
 
 面向作者个人使用的畅课（Tronclass）课程与签到查询工具，适配作者所在高校的教学平台。
-可查询本学期课程、指定日期的签到记录、数字签到码和签到人数。目前以 Python 源码工程维护，
-以命令行和独立业务层为维护重点，当前不维护打包配置。
+可查询本学期课程、指定日期的签到记录、数字签到码和签到人数。现有 Python 命令行继续保留，
+新增独立的 Go 命令行实现；两套程序可以分别运行，Go 版不依赖 Python。
 
 本项目仅供技术交流与个人学习使用，请遵守学校相关管理规定与教学秩序。
 
@@ -17,13 +17,42 @@ account.example.json     空白账号模板，随仓库提交
 account.json             本机默认账号，首次运行生成，不随仓库提交
 requirements.txt         运行依赖
 tests/                   命令行与业务查询的离线测试
+go-cli/                  独立 Go 命令行：文件账号、浏览器认证、profile 身份查询
 project_docs/            使用说明、环境说明、工作流和历史记录
 ```
 
-命令行调用 `rollcall_service` 完成业务，通过 `terminal_log` 输出终端日志。
+Python 命令行调用 `rollcall_service` 完成业务，通过 `terminal_log` 输出终端日志。
 业务层不读取账号文件或终端输入，不依赖命令行入口和日志配色模块。
 原独立脚本 `check.py` 已由统一的 `attendance` 命令替代，不再保留。
-历史桌面源码、iOS、安卓和其他历史子目录不参与本次命令行改造，没有统一启动脚本。
+历史桌面源码、iOS 和安卓使用各自实现；Go 版仅参考移动端的身份查询方式，不修改移动端代码。
+
+## Go 版快速开始
+
+Go 版使用程序旁的 `accounts/account.json`，不提供终端账号密码输入、倒计时或 Enter 切换登录。
+完成学校网页认证后，直接查询 `/api/profile` 获取并核验账号身份，不跳转课程页面提取学生编号。
+下文的 Python 启动方式继续有效，完整 Go 说明见 [GO_CLI_USAGE.md](project_docs/GO_CLI_USAGE.md)。
+
+已有本机 Go 可执行文件时，在仓库根目录运行：
+
+```bash
+./go-cli/rollcall --help
+
+# 使用原有根目录 account.json，不移动或修改它
+./go-cli/rollcall --config-dir . courses
+
+# 使用 Go 版自己的账号目录；缺失时自动生成空白模板并提示填写
+./go-cli/rollcall
+```
+
+从源码构建需要 Go 1.24+；登录时需要安装 Chrome 或 Chromium：
+
+```bash
+cd go-cli
+go build -o rollcall ./cmd/rollcall
+./rollcall --help
+```
+
+Windows 可构建为 `rollcall.exe`。不同操作系统和处理器需要分别构建；浏览器不包含在可执行文件中。
 
 完整命令与示例见 **[CLI_USAGE.md](project_docs/CLI_USAGE.md)**，环境说明见
 [ENVIRONMENT.md](project_docs/ENVIRONMENT.md)，版本管理约定见
