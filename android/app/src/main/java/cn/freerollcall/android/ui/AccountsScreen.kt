@@ -33,19 +33,24 @@ import kotlinx.coroutines.launch
     var deleting by remember { mutableStateOf<SavedAccount?>(null) }
     var localError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val accounts = state.accounts
+    val accountText = state.accountText
+    val currentAccountId = state.currentAccountId
+    val authenticated = state.authenticated
+    val busy = state.busy
     PageHeader("账号管理", action = {
         IconButton(onClick = { editor.open(null) }, enabled = !state.busy) { Icon(Icons.Outlined.Add, "添加账号") }
     })
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 24.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
-        item {
-            Text(state.accountText, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+        item(key = "accounts-summary", contentType = "summary") {
+            Text(accountText, fontWeight = FontWeight.Medium, fontSize = 14.sp)
             Message("点击账号右侧的三个点可登录、修改、设为默认或删除\n未登录时，使用功能会自动登录默认账号")
             localError?.let { Message(it) }
             Spacer(Modifier.height(12.dp))
         }
-        if (state.accounts.isEmpty()) item { EmptyState("添加你的第一个账号", "账号保存在本机，可随时修改或删除") }
-        items(state.accounts, key = { it.id }) { account ->
-            AccountRow(account, state.currentAccountId == account.id && state.authenticated, state.busy,
+        if (accounts.isEmpty()) item(key = "accounts-empty", contentType = "empty") { EmptyState("添加你的第一个账号", "账号保存在本机，可随时修改或删除") }
+        items(accounts, key = { "account-${it.id}" }, contentType = { "account" }) { account ->
+            AccountRow(account, currentAccountId == account.id && authenticated, busy,
                 login = { model.loginAccount(account.id) }, edit = { editor.open(account) },
                 makeDefault = { scope.launch {
                     try { model.makeDefault(account.id) } catch (error: CancellationException) { throw error }
@@ -53,8 +58,8 @@ import kotlinx.coroutines.launch
                 } },
                 delete = { deleting = account })
         }
-        if (state.authenticated) item {
-            TextButton(onClick = model::logout, enabled = !state.busy, modifier = Modifier.padding(top = 14.dp)) { Text("退出当前登录") }
+        if (authenticated) item(key = "accounts-logout", contentType = "action") {
+            TextButton(onClick = model::logout, enabled = !busy, modifier = Modifier.padding(top = 14.dp)) { Text("退出当前登录") }
         }
     }
     editor.draft?.let { draft -> AccountEditor(editor, draft) }

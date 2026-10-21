@@ -62,13 +62,17 @@ class TimetableNumberCodeTests(unittest.TestCase):
         self.assertEqual(self.query(), ("0539", "finished", "2026-10-08T00:33:17Z"))
         self.assert_new_endpoint_only()
 
-    def test_utc_time_crossing_midnight_uses_beijing_date(self):
+    def test_utc_time_crossing_beijing_midnight_keeps_utc_date(self):
         self.query(rollcall_time="2026-10-07T17:03:17Z")
-        self.assert_new_endpoint_only(date="2026-10-08")
+        self.assert_new_endpoint_only(date="2026-10-07")
 
-    def test_offset_time_crossing_midnight_uses_beijing_date(self):
+    def test_offset_time_is_converted_to_utc_date(self):
         self.query(rollcall_time="2026-10-07T12:03:17-05:00")
-        self.assert_new_endpoint_only(date="2026-10-08")
+        self.assert_new_endpoint_only(date="2026-10-07")
+
+    def test_positive_offset_crossing_utc_midnight_uses_previous_date(self):
+        self.query(rollcall_time="2026-10-08T01:03:17+08:00")
+        self.assert_new_endpoint_only(date="2026-10-07")
 
     def test_historical_rollcall_uses_its_date_instead_of_today(self):
         self.query(rollcall_time="2021-03-04T04:05:06Z")
@@ -77,6 +81,34 @@ class TimetableNumberCodeTests(unittest.TestCase):
     def test_naive_time_is_already_in_beijing_timezone(self):
         self.query(rollcall_time="2026-10-08T23:03:17")
         self.assert_new_endpoint_only(date="2026-10-08")
+
+    def test_naive_morning_time_uses_previous_utc_date(self):
+        self.query(rollcall_time="2026-10-08T07:56:23")
+        self.assert_new_endpoint_only(date="2026-10-07")
+
+    def test_beijing_eight_am_and_year_boundary(self):
+        for started, expected in (
+            ("2026-10-15T07:59:59+08:00", "2026-10-14"),
+            ("2026-10-15T08:00:00+08:00", "2026-10-15"),
+            ("2026-01-01T00:00:00+08:00", "2025-12-31"),
+        ):
+            with self.subTest(started=started):
+                self.get.reset_mock()
+                self.query(rollcall_time=started)
+                self.assert_new_endpoint_only(date=expected)
+
+    def test_morning_record_found_only_on_previous_utc_day(self):
+        target = attendance(rollcall_time="2026-10-14T23:56:23Z")
+
+        def reply(_url, **options):
+            rows = [target] if options["params"]["rollcall_date"] == "2026-10-14" else []
+            response = Mock(status_code=200)
+            response.json.return_value = {"rollcalls": rows}
+            return response
+
+        self.get.side_effect = reply
+        self.assertEqual(self.query(rollcall_time=target["rollcall_time"])[0], "0539")
+        self.assert_new_endpoint_only(date="2026-10-14")
 
     def test_matches_target_id_and_course_among_multiple_rollcalls(self):
         self.response.json.return_value = {
@@ -153,6 +185,71 @@ class TimetableNumberCodeTests(unittest.TestCase):
                 with self.assertRaises(service.RollcallQueryError):
                     self.query()
                 self.assert_new_endpoint_only()
+
+
+class DailyRollcallTests(unittest.TestCase):
+    @patch.object(service.requests, "get")
+    def test_beijing_day_includes_both_utc_dates_and_excludes_adjacent_days(self, get):
+        before = attendance(id=1, rollcall_time="2026-10-14T15:59:59Z")
+        midnight = attendance(id=2, rollcall_time="2026-10-14T16:00:00Z")
+        morning = attendance(id=3, rollcall_time="2026-10-14T23:59:59Z")
+        eight_am = attendance(id=4, rollcall_time="2026-10-15T00:00:00Z")
+        evening = attendance(id=5, rollcall_time="2026-10-15T15:59:59Z")
+        tomorrow = attendance(id=6, rollcall_time="2026-10-15T16:00:00Z")
+        other_course = attendance(id=7, course={"id": 999}, rollcall_time="2026-10-15T00:00:00Z")
+        replies = {
+            "2026-10-14": [before, midnight, morning],
+            "2026-10-15": [{**morning, "id": "3"}, eight_am, evening, tomorrow, other_course],
+        }
+
+        def reply(url, **options):
+            self.assertEqual(url, service.BASE_URL + "/api/timetable_rollcalls")
+            self.assertEqual(options["params"]["course_ids"], 110405)
+            response = Mock(status_code=200)
+            response.json.return_value = {"rollcalls": replies[options["params"]["rollcall_date"]]}
+            return response
+
+        get.side_effect = reply
+        result = service.get_daily_rollcalls(110405, "2026-10-15", "offline")
+        self.assertEqual(result, [midnight, morning, eight_am, evening])
+        self.assertEqual([call.kwargs["params"]["rollcall_date"] for call in get.call_args_list],
+                         ["2026-10-14", "2026-10-15"])
+
+    @patch.object(service.requests, "get")
+    def test_beijing_day_handles_new_year_and_created_at_fallback(self, get):
+        record = attendance(rollcall_time=None, created_at="2026-01-01T00:00:00+08:00")
+        response = Mock(status_code=200)
+        response.json.return_value = {"rollcalls": [record]}
+        get.return_value = response
+        self.assertEqual(service.get_daily_rollcalls(110405, "2026-01-01", "offline"), [record])
+        self.assertEqual([call.kwargs["params"]["rollcall_date"] for call in get.call_args_list],
+                         ["2025-12-31", "2026-01-01"])
+
+    @patch.object(service.requests, "get")
+    def test_invalid_date_never_queries_server(self, get):
+        for day in (None, "2026-02-30", "2026-1-1", "20261015", "0001-01-01"):
+            with self.subTest(day=day), self.assertRaises(service.RollcallQueryError):
+                service.get_daily_rollcalls(110405, day, "offline")
+        get.assert_not_called()
+
+    @patch.object(service.requests, "get")
+    def test_missing_record_time_does_not_guess_its_day(self, get):
+        response = Mock(status_code=200)
+        get.return_value = response
+        for started in (None, "invalid"):
+            response.json.return_value = {"rollcalls": [attendance(rollcall_time=started, created_at=None)]}
+            with self.subTest(started=started), self.assertRaises(service.RollcallQueryError):
+                service.get_daily_rollcalls(110405, "2026-10-15", "offline")
+
+    @patch.object(service.requests, "get")
+    def test_second_day_failure_does_not_return_partial_day(self, get):
+        response = Mock(status_code=200)
+        response.json.return_value = {"rollcalls": [attendance(rollcall_time="2026-10-14T23:56:23Z")]}
+        get.side_effect = [response, requests.Timeout("private-cookie")]
+        with self.assertRaises(service.RollcallQueryError) as caught:
+            service.get_daily_rollcalls(110405, "2026-10-15", "offline")
+        self.assertIn("超时", str(caught.exception))
+        self.assertNotIn("private-cookie", str(caught.exception))
 
 
 class TimetableCliTests(unittest.TestCase):

@@ -3,6 +3,7 @@ package cn.freerollcall.android.core
 import com.google.gson.*
 import java.time.*
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 class RollcallException(val reason: Reason, message: String) : Exception(message) {
     enum class Reason { EXPIRED, INVALID_CREDENTIALS, IDENTITY, UNCERTAIN, NETWORK, MALFORMED, OTHER }
@@ -60,14 +61,39 @@ data class Course(val id: String, val name: String) {
 }
 enum class AttendanceKind(val title: String) { NUMBER("数字签到"), RADAR("雷达签到"), OTHER("其他签到"), UNKNOWN("未知形式") }
 
+data class AttendanceCounts(val signedIn: Int, val total: Int) {
+    companion object {
+        private val signedInStatuses = setOf("on_call", "on_call_fine", "on_call_late", "present", "attended", "late")
+        fun parse(json: JsonElement): AttendanceCounts? {
+            val students = json.field("student_rollcalls").rows() ?: return null
+            if (students.any { !it.isJsonObject }) return null
+            val statuses = mutableMapOf<Pair<String, String>, MutableSet<String>>()
+            for ((index, student) in students.withIndex()) {
+                val identity = listOf("student_id", "id").firstNotNullOfOrNull { field ->
+                    student.field(field)?.takeIf { it.isJsonPrimitive && !it.asJsonPrimitive.isBoolean }
+                        .text()?.takeIf { it.isNotBlank() }?.let { field to it }
+                } ?: ("row" to index.toString())
+                val status = student.field("status")?.takeUnless { it.isJsonNull }
+                    ?: student.field("rollcall_status")
+                val normalized = status?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
+                    .text()?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() } ?: "unknown"
+                statuses.getOrPut(identity) { mutableSetOf() }.add(normalized)
+            }
+            return AttendanceCounts(statuses.values.count { it.singleOrNull() in signedInStatuses }, statuses.size)
+        }
+    }
+}
+
 data class Attendance(
     val id: String, val courseId: String? = null, val courseName: String? = null,
     val rawDate: String? = null, val kind: AttendanceKind = AttendanceKind.UNKNOWN,
     val activityStatus: String? = null, val personalStatus: String? = null,
-    val isExpired: Boolean? = null, val numberCode: String? = null, val endTime: Instant? = null
+    val isExpired: Boolean? = null, val numberCode: String? = null, val endTime: Instant? = null,
+    val attendanceCounts: AttendanceCounts? = null
 ) {
     val date: Instant? = parseTime(rawDate)
-    val queryDate: String get() = rollcallDate(rawDate, date)
+    // The timetable endpoint filters by UTC date, while the list displays school time.
+    val queryDate: String get() = date?.atOffset(ZoneOffset.UTC)?.toLocalDate()?.toString() ?: rollcallDate(rawDate)
     val isAnswered get() = personalStatus in answeredStatuses
     val hasEnded get() = isExpired == true || activityStatus in endedStatuses ||
         endTime?.let { !it.isAfter(Instant.now()) } == true
@@ -86,11 +112,17 @@ data class Attendance(
         return copy(courseId = other.courseId ?: courseId, courseName = other.courseName ?: courseName,
             rawDate = other.rawDate ?: rawDate, kind = if (other.kind == AttendanceKind.UNKNOWN) kind else other.kind,
             activityStatus = other.activityStatus ?: activityStatus, personalStatus = other.personalStatus ?: personalStatus,
-            isExpired = other.isExpired ?: isExpired, numberCode = other.numberCode ?: numberCode, endTime = other.endTime ?: endTime)
+            isExpired = other.isExpired ?: isExpired, numberCode = other.numberCode ?: numberCode, endTime = other.endTime ?: endTime,
+            attendanceCounts = other.attendanceCounts ?: attendanceCounts)
     }
-    // Supplementary code reads must not change the history row's attendance result.
-    fun withCode(detail: Attendance) = copy(numberCode = detail.numberCode ?: numberCode,
-        kind = if (kind == AttendanceKind.UNKNOWN) detail.kind else kind)
+    // Supplementary list reads must not change the history row's attendance result.
+    fun withListDetails(detail: Attendance): Attendance {
+        val code = detail.numberCode ?: numberCode
+        val counts = detail.attendanceCounts ?: attendanceCounts
+        val resolvedKind = if (kind == AttendanceKind.UNKNOWN) detail.kind else kind
+        if (code == numberCode && counts == attendanceCounts && resolvedKind == kind) return this
+        return copy(numberCode = code, attendanceCounts = counts, kind = resolvedKind)
+    }
     companion object {
         val activityStatuses = setOf("active", "finished", "ended", "closed")
         private val endedStatuses = setOf("finished", "ended", "closed")
@@ -110,7 +142,7 @@ data class Attendance(
                 activityStatus = json.field("rollcall_status").text() ?: status?.takeIf { it in activityStatuses },
                 personalStatus = status?.takeUnless { it in activityStatuses },
                 isExpired = json.field("is_expired").flag(), numberCode = code,
-                endTime = parseTime(json.field("end_time").text()))
+                endTime = parseTime(json.field("end_time").text()), attendanceCounts = AttendanceCounts.parse(json))
         }
     }
 }

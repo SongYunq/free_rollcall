@@ -39,3 +39,9 @@ cookies.json
 storage_state.json
 playwright/.auth/
 *.log
+
+# Independent Go CLI binaries and local credentials
+/go-cli/rollcall
+/go-cli/rollcall.exe
+/go-cli/accounts/account.json
+/go-cli/bin/

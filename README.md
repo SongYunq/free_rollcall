@@ -1,8 +1,8 @@
 # free_rollcall
 
 面向作者个人使用的畅课（Tronclass）课程与签到查询工具，适配作者所在高校的教学平台。
-可查询本学期课程、指定日期的签到记录、数字签到码和签到人数。目前以 Python 源码工程维护，
-以命令行和独立业务层为维护重点，当前不维护打包配置。
+可查询本学期课程、指定日期的签到记录、数字签到码和签到人数。现有 Python 命令行继续保留，
+新增独立的 Go 命令行实现；两套程序可以分别运行，Go 版不依赖 Python。
 
 本项目仅供技术交流与个人学习使用，请遵守学校相关管理规定与教学秩序。
 
@@ -17,13 +17,42 @@ account.example.json     空白账号模板，随仓库提交
 account.json             本机默认账号，首次运行生成，不随仓库提交
 requirements.txt         运行依赖
 tests/                   命令行与业务查询的离线测试
+go-cli/                  独立 Go 命令行：文件账号、浏览器认证、profile 身份查询
 project_docs/            使用说明、环境说明、工作流和历史记录
 ```
 
-命令行调用 `rollcall_service` 完成业务，通过 `terminal_log` 输出终端日志。
+Python 命令行调用 `rollcall_service` 完成业务，通过 `terminal_log` 输出终端日志。
 业务层不读取账号文件或终端输入，不依赖命令行入口和日志配色模块。
 原独立脚本 `check.py` 已由统一的 `attendance` 命令替代，不再保留。
-历史桌面源码、iOS、安卓和其他历史子目录不参与本次命令行改造，没有统一启动脚本。
+历史桌面源码、iOS 和安卓使用各自实现；Go 版仅参考移动端的身份查询方式，不修改移动端代码。
+
+## Go 版快速开始
+
+Go 版使用程序旁的 `accounts/account.json`，不提供终端账号密码输入、倒计时或 Enter 切换登录。
+完成学校网页认证后，直接查询 `/api/profile` 获取并核验账号身份，不跳转课程页面提取学生编号。
+下文的 Python 启动方式继续有效，完整 Go 说明见 [GO_CLI_USAGE.md](project_docs/GO_CLI_USAGE.md)。
+
+已有本机 Go 可执行文件时，在仓库根目录运行：
+
+```bash
+./go-cli/rollcall --help
+
+# 使用原有根目录 account.json，不移动或修改它
+./go-cli/rollcall --config-dir . courses
+
+# 使用 Go 版自己的账号目录；缺失时自动生成空白模板并提示填写
+./go-cli/rollcall
+```
+
+从源码构建需要 Go 1.24+；登录时需要安装 Chrome 或 Chromium：
+
+```bash
+cd go-cli
+go build -o rollcall ./cmd/rollcall
+./rollcall --help
+```
+
+Windows 可构建为 `rollcall.exe`。不同操作系统和处理器需要分别构建；浏览器不包含在可执行文件中。
 
 完整命令与示例见 **[CLI_USAGE.md](project_docs/CLI_USAGE.md)**，环境说明见
 [ENVIRONMENT.md](project_docs/ENVIRONMENT.md)，版本管理约定见
@@ -112,8 +141,10 @@ python3 -m venv .venv
 | 未指定日期，确定课程最新一次签到 | 原 `/api/course/{course_id}/student/{student_id}/rollcalls?page=1&page_size=99` |
 | 查询一天的签到列表、读取签到码、获取人数统计的名单 | 新 `/api/timetable_rollcalls?course_ids=<course_id>&rollcall_date=<yyyy-mm-dd>` |
 
-未指定日期时，先从学生签到列表取得最新签到编号与时间，再用该时间的北京时间日期和签到编号
-匹配新接口；指定日期则直接请求新接口。签到码保留前导零。
+新接口的 `rollcall_date` 按 UTC 日期筛选；命令行输入的 `--date` 与显示时间仍按北京时间。
+未指定日期时，先从学生签到列表取得最新签到编号与时间，再用该时间的 UTC 日期和签到编号
+匹配新接口。按日查询会请求所选北京时间日期覆盖的两个 UTC 日期，按发起时间筛选并去重，
+避免漏掉早上 8 点前的签到或混入次日记录。签到码保留前导零。
 命令行不调用旧 `/api/rollcall/{rollcall_id}/student_rollcalls`，查询失败也不回退到它。
 旧接口只保留给历史桌面源码；iOS 和安卓有各自独立的查询实现，本次不调整。
 
@@ -126,7 +157,9 @@ python3 -m venv .venv
 | `get_current_semester_info(cookie, ...)` | 查询学期，返回 `(semester_id, academic_year_id)` |
 | `get_courses(cookie, semester_id, academic_year_id, ...)` | 分页查询本学期课程，按课程 ID 去重 |
 | `get_latest_rollcall_id(course_id, cookie, student_id)` | 获取最新签到编号与发起时间，无记录时返回 `(None, None)` |
-| `get_timetable_rollcalls(course_id, rollcall_date, cookie)` | 通过课程日期接口查询签到列表 |
+| `get_rollcall_date(rollcall_time)` | 将发起时间转换为接口使用的 UTC 日期，无时区时间按北京时间解释 |
+| `get_timetable_rollcalls(course_id, rollcall_date, cookie)` | 按 UTC 日期直接查询接口的签到列表 |
+| `get_daily_rollcalls(course_id, rollcall_date, cookie)` | 按北京时间查询一天，合并两个 UTC 日期的结果并筛选、去重 |
 | `get_timetable_rollcall(course_id, rollcall_id, rollcall_time, cookie)` | 从课程日期接口匹配指定签到记录 |
 | `get_timetable_number_code(course_id, rollcall_id, rollcall_time, cookie)` | 保留现有调用方式，返回 `(number_code, status, end_time)` |
 | `summarize_attendance(rollcall)` | 汇总人数与状态，不发起网络请求 |

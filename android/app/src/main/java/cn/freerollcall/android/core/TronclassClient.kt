@@ -62,9 +62,18 @@ class TronclassClient(val transport: Transport, private val wait: suspend (Long)
             val rid = it.field("id").text() ?: it.field("rollcall_id").text()
             rid == id
         } ?: throw RollcallException.message("该日期的查询结果中未找到本次签到")
-        val fields = item.asJsonObject.deepCopy().apply { addProperty("rollcall_id", id) }
+        return parseDetail(item, studentId)
+    }
+    suspend fun details(courseId: String, date: String, studentId: String): List<Attendance> {
+        validateId(studentId)
+        return timetableRollcalls(courseId, date).map { parseDetail(it, studentId) }
+    }
+    private fun parseDetail(item: JsonElement, studentId: String): Attendance {
+        val id = item.field("id").text() ?: item.field("rollcall_id").text() ?: throw RollcallException.malformed()
         val own = item.field("student_rollcalls").rows()?.firstOrNull { it.field("student_id").text() == studentId }
-        return Attendance.parse(fields).copy(personalStatus = own?.field("status").text())
+        // Parsing only reads the JSON. Do not duplicate the entire class roster to
+        // normalize an ID; apply the timetable's ID precedence to the result.
+        return Attendance.parse(item).copy(id = id, personalStatus = own?.field("status").text())
     }
     suspend fun detail(id: String, studentId: String): Attendance =
         detail("1", id, rollcallDate(null), studentId)

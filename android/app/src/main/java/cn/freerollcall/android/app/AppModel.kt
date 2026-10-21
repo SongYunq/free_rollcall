@@ -6,7 +6,10 @@ import cn.freerollcall.android.auth.*
 import cn.freerollcall.android.core.*
 import cn.freerollcall.android.storage.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.util.UUID
 
 enum class AppTab(val title: String) { HOME("功能"), LOGS("本地日志"), ACCOUNTS("账号管理") }
@@ -22,6 +25,7 @@ data class UiState(
     val courses: List<Course> = emptyList(), val selectedCourse: Course? = null,
     val records: List<Attendance> = emptyList(), val history: PageAccumulator<Attendance> = PageAccumulator(),
     val busy: Boolean = false, val initializing: Boolean = false, val homeLoading: HomeLoading = HomeLoading.NONE,
+    val historyEnriching: Boolean = false,
     val submitting: String? = null, val error: String? = null,
     val message: String? = null, val notice: String? = null, val loginPrompt: LoginPrompt? = null
 ) {
@@ -34,11 +38,17 @@ data class UiState(
 }
 
 class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val computationDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val authenticate: (suspend (AuthCredentials, Boolean) -> AuthResult)? = null) : ViewModel() {
     private val mutable = MutableStateFlow(UiState(initializing = true))
     val state: StateFlow<UiState> = mutable.asStateFlow()
     private var session: Session? = null
     private var job: Job? = null
+    private var historyDetailsJob: Job? = null
+    private var historyPendingIds: Set<String> = emptySet()
+    private data class HistoryContinuation(val course: Course, val epoch: Int, val pendingIds: Set<String>)
+    private var operationId = 0
+    private var editingStore = false
     private var epoch = 0
     private val failures = mutableMapOf<String, Int>()
     private val ready = CompletableDeferred<Unit>()
@@ -65,20 +75,49 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
     }
     private fun operation(loading: HomeLoading = HomeLoading.NONE, block: suspend () -> Unit) {
         if (state.value.busy) return
+        val continuation = pauseHistoryDetails()
+        val id = ++operationId
         change { it.copy(busy = true, homeLoading = loading, notice = null) }
         job = viewModelScope.launch {
             try { ready.await(); block() } catch (error: Exception) { report(error) }
-            finally { change { it.copy(busy = false, homeLoading = HomeLoading.NONE, submitting = null) } }
+            finally { if (id == operationId) {
+                change { it.copy(busy = false, homeLoading = HomeLoading.NONE, submitting = null) }
+                resumeHistoryDetails(continuation)
+            } }
         }
+    }
+    private fun stopHistoryDetails() {
+        historyDetailsJob?.cancel(); historyDetailsJob = null
+        historyPendingIds = emptySet()
+        change { if (it.historyEnriching) it.copy(historyEnriching = false) else it }
+    }
+    private fun pauseHistoryDetails(): HistoryContinuation? {
+        val continuation = if (state.value.historyEnriching) state.value.selectedCourse?.let {
+            HistoryContinuation(it, epoch, historyPendingIds)
+        } else null
+        stopHistoryDetails()
+        return continuation
+    }
+    private fun resumeHistoryDetails(continuation: HistoryContinuation?) {
+        val current = session ?: return
+        if (continuation == null || historyDetailsJob != null || epoch != continuation.epoch ||
+            state.value.page != HomePage.HISTORY || state.value.selectedCourse?.id != continuation.course.id) return
+        startHistoryDetails(continuation.course, current, continuation.epoch, continuation.pendingIds)
     }
     private fun requireIdle() { if (state.value.busy) throw RollcallException.message("请等待当前操作完成") }
     suspend fun password(id: String): String { ready.await(); return storage { store.password(id) } }
     private suspend fun <T> editStore(block: suspend () -> T): T {
         ready.await(); requireIdle()
+        val continuation = pauseHistoryDetails()
+        editingStore = true
         change { it.copy(busy = true) }
         // A tab change can cancel its editor, but must not interrupt a committed write's state refresh.
         return viewModelScope.async {
-            try { block() } finally { change { it.copy(busy = false) } }
+            try { block() } finally {
+                editingStore = false
+                change { it.copy(busy = false) }
+                resumeHistoryDetails(continuation)
+            }
         }.await()
     }
     suspend fun saveAccount(id: String?, username: String, password: String, note: String) = editStore {
@@ -95,6 +134,7 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
         reload()
     }
     private fun invalidateSession(clearAccount: Boolean) {
+        stopHistoryDetails()
         session = null; epoch++
         change { it.copy(authenticated = false, currentAccountId = if (clearAccount) null else it.currentAccountId,
             page = HomePage.HOME, courses = emptyList(), records = emptyList(), history = PageAccumulator(), selectedCourse = null,
@@ -188,53 +228,132 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
         try {
             val page = read { it.client.history(course.id, it.profile.id, if (reset) 1 else state.value.history.nextPage) }
             if (token != epoch) return
-            val old = state.value.records.associateBy { it.id }
-            val accumulator = (if (reset) PageAccumulator() else state.value.history).append(page, Attendance::id)
-            var records = accumulator.items.map { if (reset) it else old[it.id] ?: it }
-            try {
-                for (active in read { it.client.active() }) {
-                    val index = records.indexOfFirst { it.id == active.id }
-                    if (index >= 0) {
-                        // Activity endpoint is authoritative for activity, not individual attendance.
-                        records = records.toMutableList().apply { this[index] = this[index].merge(active.copy(personalStatus = null)) }
-                    } else if (active.courseId == course.id) records = records + active
-                }
-            } catch (error: CancellationException) { throw error }
-            catch (_: Exception) { change { it.copy(error = "历史记录已加载，当前活动刷新失败，可下拉重试") } }
-            if (token != epoch) return
-            records = records.sortedWith(compareByDescending<Attendance> { it.isActive }.thenByDescending { it.date })
-            change { it.copy(records = records, history = accumulator) }
-            // Authenticate before concurrent detail reads; each worker remains read-only.
-            val current = ensureSession()
-            val missing = records.filter { it.kind == AttendanceKind.UNKNOWN || it.kind == AttendanceKind.NUMBER && it.numberCode.isNullOrEmpty() }
-            var incomplete = false
-            // Publish one list update per batch, rather than rebuilding for every completed code.
-            for (batch in missing.chunked(4)) {
-                val details = coroutineScope {
-                    batch.map { row -> async {
-                        try {
-                            val courseId = row.courseId ?: course.id
-                            val date = row.queryDate
-                            row.id to remote { current.client.detail(courseId, row.id, date, current.profile.id) }
-                        }
-                        catch (error: CancellationException) { throw error }
-                        catch (_: Exception) { row.id to null }
-                    } }.awaitAll().toMap()
-                }
-                if (token != epoch) return
-                if (details.values.any { it == null || it.kind == AttendanceKind.NUMBER && it.numberCode.isNullOrEmpty() }) incomplete = true
-                change { ui -> ui.copy(records = ui.records.map { row -> details[row.id]?.let(row::withCode) ?: row }) }
+            val previous = state.value
+            val (accumulator, records) = withContext(computationDispatcher) {
+                val old = previous.records.associateBy { it.id }
+                val accumulator = (if (reset) PageAccumulator() else previous.history).append(page, Attendance::id)
+                val records = accumulator.items.map { row ->
+                    val cached = old[row.id]
+                    when {
+                        cached == null -> row
+                        !reset -> cached
+                        else -> row.copy(numberCode = row.numberCode ?: cached.numberCode,
+                            attendanceCounts = row.attendanceCounts ?: cached.attendanceCounts,
+                            kind = if (row.kind == AttendanceKind.UNKNOWN) cached.kind else row.kind)
+                    }
+                }.sortedWith(compareByDescending<Attendance> { it.isActive }.thenByDescending { it.date })
+                accumulator to records
             }
-            if (token == epoch && incomplete) change { it.copy(error = listOfNotNull(it.error, "部分签到码未获取，可下拉刷新重试").joinToString("；")) }
+            if (token != epoch) return
+            change { it.copy(records = records, history = accumulator) }
+            val current = ensureSession()
+            // Optional class counts and codes never hold the foreground operation lock.
+            startHistoryDetails(course, current, token, page.items.filter { it.attendanceCounts == null ||
+                it.kind == AttendanceKind.UNKNOWN || it.kind == AttendanceKind.NUMBER && it.numberCode.isNullOrEmpty() }
+                .map { it.id }.toSet())
         } catch (error: CancellationException) { throw error }
         catch (error: Exception) { if (token == epoch) change { it.copy(error = error.message) } }
     }
+    private fun startHistoryDetails(course: Course, current: Session, token: Int, refreshedIds: Set<String>) {
+        historyPendingIds = refreshedIds
+        change { it.copy(historyEnriching = true) }
+        historyDetailsJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            try { enrichHistory(course, current, token, refreshedIds) }
+            catch (error: CancellationException) { throw error }
+            catch (_: Exception) {
+                if (token == epoch) change { it.copy(error = "部分签到信息未更新，可下拉刷新重试") }
+            } finally {
+                if (historyDetailsJob == currentCoroutineContext().job) {
+                    historyDetailsJob = null
+                    historyPendingIds = emptySet()
+                    if (token == epoch) change { it.copy(historyEnriching = false) }
+                }
+            }
+        }
+        historyDetailsJob?.start()
+    }
+    private suspend fun enrichHistory(course: Course, current: Session, token: Int, refreshedIds: Set<String>) {
+        var activeIds: Set<String> = emptySet()
+        try {
+            val active = remote { current.client.active() }
+            val snapshot = state.value.records
+            val records = withContext(computationDispatcher) {
+                val combined = snapshot.associateBy { it.id }.toMutableMap()
+                for (item in active) {
+                    val previous = combined[item.id]
+                    if (previous != null) combined[item.id] = previous.merge(item.copy(personalStatus = null))
+                    else if (item.courseId == course.id) combined[item.id] = item
+                }
+                combined.values.sortedWith(compareByDescending<Attendance> { it.isActive }.thenByDescending { it.date })
+            }
+            if (token != epoch) return
+            activeIds = active.map { it.id }.toSet()
+            change { if (it.records == records) it else it.copy(records = records) }
+        } catch (error: CancellationException) { throw error }
+        catch (_: Exception) {
+            if (token == epoch) change { it.copy(error = "历史记录已加载，当前活动刷新失败，可下拉重试") }
+        }
+        if (token != epoch) return
+        val snapshot = state.value.records
+        val days = withContext(computationDispatcher) {
+            snapshot.filter { it.id in refreshedIds || it.id in activeIds || it.attendanceCounts == null ||
+                it.kind == AttendanceKind.UNKNOWN || it.kind == AttendanceKind.NUMBER && it.numberCode.isNullOrEmpty() }
+                .groupBy { (it.courseId ?: course.id) to it.queryDate }
+        }
+        var missingCodes = false
+        var missingCounts = false
+        coroutineScope {
+            val results = Channel<Map<String, Attendance?>>(Channel.UNLIMITED)
+            val workers = launch {
+                try {
+                    val permits = Semaphore(4)
+                    coroutineScope {
+                        days.map { (day, rows) -> launch {
+                            permits.withPermit {
+                                val details = try {
+                                    val fetched = remote { current.client.details(day.first, day.second, current.profile.id) }.associateBy { it.id }
+                                    rows.associate { it.id to fetched[it.id] }
+                                } catch (error: CancellationException) { throw error }
+                                catch (_: Exception) { rows.associate { it.id to null } }
+                                results.send(details)
+                            }
+                        } }.joinAll()
+                    }
+                } finally { results.close() }
+            }
+            for (first in results) {
+                // Coalesce responses that arrive together into one list publication.
+                val details = first.toMutableMap()
+                delay(40)
+                while (true) {
+                    val next = results.tryReceive().getOrNull() ?: break
+                    details.putAll(next)
+                }
+                val before = state.value.records
+                val updated = withContext(computationDispatcher) {
+                    before.map { row -> details[row.id]?.let(row::withListDetails) ?: row }
+                }
+                if (token != epoch) return@coroutineScope
+                historyPendingIds = historyPendingIds - details.filterValues { it?.attendanceCounts != null }.keys
+                val affected = updated.filter { it.id in details }
+                missingCodes = missingCodes || affected.any { it.kind == AttendanceKind.UNKNOWN ||
+                    it.kind == AttendanceKind.NUMBER && it.numberCode.isNullOrEmpty() }
+                missingCounts = missingCounts || details.values.any { it?.attendanceCounts == null }
+                change { if (it.records == updated) it else it.copy(records = updated) }
+            }
+            workers.join()
+        }
+        if (token == epoch && (missingCodes || missingCounts)) change {
+            val fields = listOfNotNull("签到码".takeIf { missingCodes }, "人数".takeIf { missingCounts }).joinToString("和")
+            it.copy(error = listOfNotNull(it.error, "部分${fields}未获取，可下拉刷新重试").joinToString("；"))
+        }
+    }
     fun back(): Boolean {
         if (state.value.page == HomePage.HOME) return false
-        if (state.value.submitting != null || state.value.loginPrompt != null) return true
-        epoch++; job?.cancel()
+        if (state.value.submitting != null || state.value.loginPrompt != null || editingStore) return true
+        epoch++; operationId++; job?.cancel(); stopHistoryDetails()
         change { it.copy(page = if (it.page == HomePage.HISTORY) HomePage.COURSES else HomePage.HOME,
-            selectedCourse = null, records = emptyList(), error = null, message = null) }
+            selectedCourse = null, records = emptyList(), busy = false, homeLoading = HomeLoading.NONE, error = null, message = null) }
         return true
     }
     fun refreshDetail(id: String) = operation {
@@ -253,6 +372,7 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
         change { it.copy(submitting = id, message = "正在准备签到") }
         val log = storage { store.begin(account, account.verifiedStudentId.orEmpty(), course, original) }
         var attempted = false; var accepted = false
+        var radarResult: Pair<Attendance, Session>? = null
         try {
             reload()
             // A read can renew an expired session before the first submission, but never retry a write.
@@ -278,7 +398,8 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
                 AttendanceKind.RADAR -> {
                     attempted = true
                     if (!remote { current.client.submitRadar(id) }) throw RollcallException.message("雷达签到未完成，请稍后重试")
-                    fresh = fresh.copy(personalStatus = "on_call_fine")
+                    fresh = fresh.copy(personalStatus = "on_call_fine", attendanceCounts = null)
+                    radarResult = fresh to current
                 }
                 else -> throw RollcallException.message("暂不支持此签到形式")
             }
@@ -297,6 +418,15 @@ class AppModel(val store: Store, private val storageDispatcher: CoroutineDispatc
             try { withContext(NonCancellable) { storage { store.update(log.id, result, message) } } } catch (saveError: Exception) { report(saveError) }
             change { it.copy(message = message) }
         } finally { withContext(NonCancellable) { reload() } }
+        // Refresh the class count after a confirmed radar success. A failed read
+        // leaves the count unknown without changing the successful submission log.
+        if (accepted) radarResult?.let { (record, current) ->
+            try {
+                val detail = remote { current.client.detail(record.courseId ?: course.id, id, record.queryDate, current.profile.id) }
+                replace(record.copy(attendanceCounts = detail.attendanceCounts))
+            } catch (error: CancellationException) { throw error }
+            catch (_: Exception) { /* Pull-to-refresh can retrieve the count later. */ }
+        }
     }
     private fun replace(record: Attendance) = change { it.copy(records = it.records.map { row -> if (row.id == record.id) record else row }) }
     fun reconcile(id: String) = operation {

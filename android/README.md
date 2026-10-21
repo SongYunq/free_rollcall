@@ -50,9 +50,11 @@ Release 产物是 `app/build/outputs/apk/release/app-release-unsigned.apk`，需
 
 - 默认打开功能页，点击“进入课程”只列出当前学期课程，课程分页由程序自动处理。
 - 选择课程查看历史签到，数字签到码会直接出现在列表里，包含已经结束的记录，保留前导零。部分代码未获取时可下拉刷新。
+- 每条签到右侧显示“已签到/总人数”，详情中也可查看。已签到包含迟到，总人数以本次签到接口返回的名册去重统计；人数未取得时显示“—/—”，可下拉刷新重试。签到成功后会重新查询人数，统计查询失败不影响已确认的签到结果。
 - 已签到与迟到保持对应文案；明确为本人未签到且活动已结束的记录显示红色“缺勤”；正在进行的未签到显示“正在签到”。未知本人状态不会直接判为缺勤。
 - 点击进行中的可用条目直接签到，数字码自动填写并保留在屏幕上，雷达采用既有参考机器人流程。其他条目可查看详情。
 - 下拉或点击右上角刷新可重新查询；历史较多时用“加载更多记录”翻页。
+- 历史列表先显示，签到码和人数在后台补充，不必等全部查完才能操作。刷新时保留已有内容；打开详情或签到会优先处理当前操作，再继续补充其他记录。
 
 ### 本地日志
 
@@ -84,4 +86,4 @@ Release 产物是 `app/build/outputs/apk/release/app-release-unsigned.apk`，需
 ./gradlew connectedDebugAndroidTest
 ```
 
-实施方案见 [实施计划](project_docs/IMPLEMENTATION_PLAN.md)，测试及交互与性能修复结果见 [验证记录](project_docs/IMPLEMENTATION_PROGRESS.md)，当前版本的完整目录检查见 [安卓检查与修复](project_docs/ANDROID_AUDIT.md)。真实学校登录和签到需后续真机验收，本轮使用离线响应验证。第三方移植说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+实施方案见 [实施计划](project_docs/IMPLEMENTATION_PLAN.md)，测试及交互与性能修复结果见 [验证记录](project_docs/IMPLEMENTATION_PROGRESS.md)，完整目录检查见 [安卓检查与修复](project_docs/ANDROID_AUDIT.md)，1.0.3 调整见 [流畅度优化记录](project_docs/PERFORMANCE_OPTIMIZATION.md)。真实学校登录和签到需后续真机验收，本轮使用离线响应验证。第三方移植说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
