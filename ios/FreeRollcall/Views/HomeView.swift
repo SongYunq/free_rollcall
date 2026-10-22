@@ -62,7 +62,7 @@ struct HistoryView: View {
     @Bindable var state: AppState
     let course: Course
     @State private var selected: Attendance?
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .subheadline) private var countColumnWidth = 88
     var body: some View {
         List {
             VStack(alignment: .leading, spacing: 8) {
@@ -80,33 +80,47 @@ struct HistoryView: View {
                         Image(systemName: record.kind == .radar ? "dot.radiowaves.left.and.right" : "number.square")
                             .font(.title3).frame(width: 28, height: 24)
                         VStack(alignment: .leading, spacing: 8) {
-                            if dynamicTypeSize.isAccessibilitySize {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(record.kind.title).fontWeight(.medium)
-                                    statusText(record)
+                            Text(record.kind.title).fontWeight(.medium)
+                            Grid(horizontalSpacing: 14, verticalSpacing: 8) {
+                                GridRow {
+                                    Text(record.date.map(DisplayDate.string) ?? record.rawDate ?? "时间未提供")
+                                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Text(record.attendanceCountsText)
+                                        .font(.subheadline.monospacedDigit().weight(.semibold))
+                                        .lineLimit(1).minimumScaleFactor(0.6)
+                                        .frame(width: min(countColumnWidth, 120), alignment: .trailing)
+                                        .accessibilityIdentifier("attendance-counts-\(record.id)")
                                 }
-                            } else {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text(record.kind.title).fontWeight(.medium)
-                                    Spacer(minLength: 8)
+                                GridRow {
+                                    if record.kind == .number {
+                                        let code = record.numberCode.flatMap { $0.isEmpty ? nil : $0 }
+                                        Text("签到码  \(code ?? (state.loadingHistory ? "正在获取…" : "未获取"))")
+                                            .font(.body.monospacedDigit().weight(.semibold)).textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .accessibilityIdentifier("attendance-code-\(record.id)")
+                                    } else {
+                                        Color.clear.frame(width: 0, height: 0).gridCellUnsizedAxes(.horizontal)
+                                    }
                                     statusText(record)
+                                        .frame(width: min(countColumnWidth, 120), alignment: .trailing)
                                 }
                             }
-                            Text(record.date.map(DisplayDate.string) ?? record.rawDate ?? "时间未提供")
-                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            if record.kind == .number {
-                                let code = record.numberCode.flatMap { $0.isEmpty ? nil : $0 }
-                                Text("签到码  \(code ?? (state.loadingHistory ? "正在获取…" : "未获取"))")
-                                    .font(.body.monospacedDigit().weight(.semibold)).textSelection(.enabled)
-                            }
-                            if record.canSubmit {
-                                Text(state.operationRecordID == record.id ? "正在签到…" : "点击此条目签到")
-                                    .font(.caption.weight(.medium))
+                            if record.canSubmit || state.operationRecordID == record.id {
+                                HStack {
+                                    if record.canSubmit {
+                                        Text(state.operationRecordID == record.id ? "正在签到…" : "点击此条目签到")
+                                            .font(.caption.weight(.medium))
+                                    }
+                                    Spacer()
+                                    if state.operationRecordID == record.id { ProgressView().accessibilityLabel("正在提交签到") }
+                                }
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
-                        AttendanceCountsColumn(record: record, isSubmitting: state.operationRecordID == record.id)
                     }.padding(.vertical, 14).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).disabled(state.busy)
@@ -128,33 +142,15 @@ struct HistoryView: View {
     }
     private func statusText(_ record: Attendance) -> some View {
         Text(record.stateText).font(.caption)
-            .foregroundStyle(record.isAbsent ? Color.red : Color.secondary)
+            .foregroundStyle(record.isAnswered ? Color.green : (record.isAbsent ? Color.red : Color.secondary))
             .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("attendance-status-\(record.id)")
     }
 }
 
 private extension Attendance {
     var attendanceCountsText: String {
         attendanceCounts.map { "\($0.signedIn)/\($0.total)" } ?? "—/—"
-    }
-}
-
-private struct AttendanceCountsColumn: View {
-    let record: Attendance
-    let isSubmitting: Bool
-    @ScaledMetric(relativeTo: .subheadline) private var columnWidth = 88
-    var body: some View {
-        VStack(alignment: .trailing, spacing: 6) {
-            Text(record.attendanceCountsText)
-                .font(.subheadline.monospacedDigit().weight(.semibold))
-                .lineLimit(1).minimumScaleFactor(0.6)
-                .accessibilityIdentifier("attendance-counts-\(record.id)")
-            Text("已签到/总人数").font(.caption2).foregroundStyle(.secondary)
-                .multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
-            if isSubmitting { ProgressView().accessibilityLabel("正在提交签到") }
-        }
-        .frame(width: min(columnWidth, 120), alignment: .trailing)
-        .layoutPriority(1)
     }
 }
 

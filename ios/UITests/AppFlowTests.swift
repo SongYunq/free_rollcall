@@ -25,7 +25,15 @@ final class AppFlowTests: XCTestCase {
             XCTAssertEqual(counts.label, count)
             XCTAssertGreaterThan(counts.frame.minX, row.frame.midX, "人数应位于条目右侧")
             XCTAssertLessThanOrEqual(counts.frame.maxX, row.frame.maxX, "人数应完整显示在条目内")
-            XCTAssertTrue(row.label.contains("已签到/总人数"))
+            XCTAssertFalse(row.label.contains("已签到/总人数"))
+            let state = row.staticTexts["attendance-status-\(id)"]
+            XCTAssertEqual(state.label, status)
+            XCTAssertGreaterThan(state.frame.minY, counts.frame.maxY, "签到状态应位于人数下方")
+            XCTAssertEqual(state.frame.maxX, counts.frame.maxX, accuracy: 1, "人数和签到状态应右对齐")
+            if id != "702" {
+                let code = row.staticTexts["attendance-code-\(id)"]
+                XCTAssertEqual(state.frame.midY, code.frame.midY, accuracy: 1, "签到状态应与左侧签到码在同一行")
+            }
             if id != "704" { XCTAssertFalse(row.label.contains("缺勤")) }
             XCTAssertFalse(app.navigationBars["签到详情"].exists)
             if id == "703" {
@@ -113,7 +121,12 @@ final class AppFlowTests: XCTestCase {
         XCTAssertGreaterThan(counts.frame.minX, attendance.frame.midX)
         XCTAssertLessThanOrEqual(counts.frame.maxX, app.frame.maxX - 12)
         XCTAssertTrue(attendance.label.contains("正在签到"))
-        XCTAssertTrue(attendance.label.contains("已签到/总人数"))
+        XCTAssertFalse(attendance.label.contains("已签到/总人数"))
+        let state = attendance.staticTexts["attendance-status-701"]
+        let code = attendance.staticTexts["attendance-code-701"]
+        XCTAssertTrue(state.exists)
+        XCTAssertGreaterThan(state.frame.minY, counts.frame.maxY)
+        XCTAssertEqual(state.frame.midY, code.frame.midY, accuracy: 1)
     }
     @MainActor func testThreePagesLeftSwipeAndAttendanceFlow() throws {
         let app = XCUIApplication()
