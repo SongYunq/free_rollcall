@@ -130,7 +130,6 @@ struct HistoryView: View {
             else if state.records.isEmpty && state.historyError == nil {
                 ContentUnavailableView("暂无签到记录", systemImage: "list.bullet.rectangle").listRowSeparator(.hidden)
             }
-            if !state.loadingHistory && !state.historyPage.note.isEmpty { MessageRow(text: state.historyPage.note) }
         }
         .pageList().navigationTitle("课程签到").navigationBarTitleDisplayMode(.inline)
         .task(id: course.id) { await state.loadHistory(course: course) }
