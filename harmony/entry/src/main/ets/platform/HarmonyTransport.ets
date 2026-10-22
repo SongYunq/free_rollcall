@@ -6,6 +6,10 @@ import { RollcallError } from '../core/Errors';
 /** One authenticated account's memory-only cookie snapshot. Never uses a shared cookie jar. */
 export class HarmonyTransport implements HTTPTransport {
   static readonly BASE: string = 'https://lnt.xmu.edu.cn';
+  // LNT routes mobile browser identities to c-mobile, which is a separate portal.
+  // Authentication and native API requests must use the same desktop service identity.
+  static readonly DESKTOP_USER_AGENT: string =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
   private cookie: string;
   private userAgent: string;
 
@@ -13,8 +17,7 @@ export class HarmonyTransport implements HTTPTransport {
     // Header injection must not be possible even if a Web engine returns malformed data.
     if (/[\r\n]/.test(cookie)) { throw new RollcallError('message', '登录状态格式无效，请重新登录'); }
     this.cookie = cookie;
-    this.userAgent = userAgent.length > 0 && !/[\r\n]/.test(userAgent) ? userAgent :
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    this.userAgent = userAgent.length > 0 && !/[\r\n]/.test(userAgent) ? userAgent : HarmonyTransport.DESKTOP_USER_AGENT;
   }
 
   async send(request: APIRequest): Promise<APIResponse> {

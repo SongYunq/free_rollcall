@@ -39,7 +39,7 @@ function loadAdapter(name, mocks, cache = new Map()) {
 function nativeMocks(profile = { id: '42', user_no: 'student', name: 'Test' }) {
   const state = { metadata: new Map(), secrets: new Map(), calls: [], options: [], closed: 0,
     clearCookies: [], cookie: 'school_session=isolated', failFlush: 0, networkError: false,
-    loadURL: undefined, queryAttributes: undefined };
+    loadURL: undefined, queryAttributes: undefined, userAgent: undefined };
   const tags = { ALIAS: 1, SECRET: 2, RETURN_TYPE: 3, ACCESSIBILITY: 4, SYNC_TYPE: 5, CONFLICT_RESOLUTION: 6 };
   const alias = (attributes) => new TextDecoder().decode(attributes.get(tags.ALIAS));
   const asset = {
@@ -84,7 +84,12 @@ function nativeMocks(profile = { id: '42', user_no: 'student', name: 'Test' }) {
       }
     } },
     '@kit.ArkWeb': { webview: {
-      WebviewController: class { stop() {} loadUrl(value) { state.loadURL?.(value); } },
+      WebviewController: class {
+        stop() {}
+        setCustomUserAgent(value) { state.userAgent = value; }
+        getUserAgent() { return state.userAgent; }
+        loadUrl(value) { state.loadURL?.(value); }
+      },
       WebCookieManager: {
         clearAllCookiesSync(incognito) { state.clearCookies.push(incognito); },
         putAcceptThirdPartyCookieEnabled(value) { assert.equal(value, false); },
@@ -141,6 +146,7 @@ test('transport sends school-only requests, preserves course POST body and disab
   assert.equal(state.calls[0].url, 'https://lnt.xmu.edu.cn/api/my-courses');
   assert.equal(state.calls[0].content, '{"page":1}');
   assert.equal(state.calls[0].headers.Cookie, 'only=this-account');
+  assert.equal(state.calls[0].headers['User-Agent'], HarmonyTransport.DESKTOP_USER_AGENT);
   assert.equal(state.options[0].requestConfiguration.transfer.autoRedirect, false);
   assert.equal(state.closed, 1);
   await assert.rejects(transport.send(new APIRequest('https://other.test/api/profile')), /请求地址或方式无效/);
@@ -193,4 +199,6 @@ test('verified manual authentication returns account-bound in-memory client', as
   assert.equal(auth.active, false); assert.equal(state.calls.length, 1);
   await session.client.profile();
   assert.equal(state.calls[1].headers.Cookie, state.cookie);
+  assert.equal(state.calls[1].headers['User-Agent'], state.userAgent);
+  assert.doesNotMatch(state.userAgent, /Mobile/i);
 });

@@ -26,6 +26,7 @@ export class WebAuthenticator implements AuthPort {
     if (!this.active) { return; }
     this.currentURL = url;
     this.navigationFailed = false;
+    console.info('[FreeRollcallAuth] navigation host=' + WebAuthenticator.schoolHost(url));
   }
 
   onPageEnd(url: string): void {
@@ -85,6 +86,7 @@ export class WebAuthenticator implements AuthPort {
     try {
       return await Promise.race([this.run(account, password, token), cancelled]);
     } catch (error) {
+      console.warn('[FreeRollcallAuth] authentication failed at ' + this.progress);
       if (error instanceof RollcallError) { throw error; }
       // Web engine errors can contain full URLs or injected scripts; never expose raw errors.
       throw new RollcallError('message', '登录页面暂时不可用，请检查网络后重试');
@@ -109,6 +111,9 @@ export class WebAuthenticator implements AuthPort {
     try {
       webview.WebCookieManager.clearAllCookiesSync(true);
       webview.WebCookieManager.putAcceptThirdPartyCookieEnabled(false);
+      // Set before the first request: the school redirects a mobile UA to c-mobile
+      // after SSO, while our native course client uses the desktop LNT service.
+      this.controller.setCustomUserAgent(HarmonyTransport.DESKTOP_USER_AGENT);
       this.controller.loadUrl(HarmonyTransport.BASE + '/');
     } catch (error) {
       throw new RollcallError('message', '登录页面加载失败，请检查网络后重试');
@@ -118,7 +123,7 @@ export class WebAuthenticator implements AuthPort {
     let wasManual = this.manual;
     let lastProfileAttempt = 0;
     let handoffStarted = 0;
-    let formWaitStarted = 0;
+    let lastObservedState = '';
     while (true) {
       this.check(token);
       if (this.navigationFailed) {
@@ -170,15 +175,22 @@ export class WebAuthenticator implements AuthPort {
         if (this.verifying) { this.verifying = false; this.onChange(); }
       }
       if (!this.manual && host === 'ids.xmu.edu.cn') {
-        if (formWaitStarted === 0) { formWaitStarted = Date.now(); }
         const state = await this.evaluate(WebAuthenticator.OBSERVE_SCRIPT, token);
         this.check(token);
+        if (state !== lastObservedState) {
+          console.info('[FreeRollcallAuth] form=' + state + ' submitted=' + didSubmit.toString());
+          lastObservedState = state;
+        }
+        if (state === 'initializing') { this.setProgress('等待学校登录页面初始化'); }
         if (state === 'manual') { this.showManual(); phaseStarted = Date.now(); }
-        else if (state === 'invalid' && didSubmit) { throw new RollcallError('invalidCredentials'); }
+        else if (state === 'invalid') { throw new RollcallError('invalidCredentials'); }
         else if (state === 'error') { throw new RollcallError('message', '统一身份认证暂时不可用，请稍后重试'); }
+        else if (state === 'submitted') { didSubmit = true; this.setProgress('等待认证结果'); }
         else if (state === 'ready' && !didSubmit) {
           this.setProgress('正在使用账号密码登录');
-          const result = await this.evaluate(WebAuthenticator.fillScript(account.username, password), token);
+          // Username blur runs the school's synchronous captcha check. It can legitimately take
+          // longer than a normal DOM read; cancelling the login still interrupts this wait.
+          const result = await this.evaluate(WebAuthenticator.fillScript(account.username, password), token, 20000);
           this.check(token);
           if (result === 'truncated') { throw new RollcallError('invalidCredentials'); }
           if (result === 'manual') { this.showManual(); }
@@ -187,21 +199,24 @@ export class WebAuthenticator implements AuthPort {
             await this.pause(400);
             this.check(token);
             if (!this.manual) {
+              this.setProgress('确认学校页面是否接受提交');
               const submitted = await this.evaluate(WebAuthenticator.SUBMIT_SCRIPT, token);
               if (submitted === 'manual') { this.showManual(); }
+              if (submitted === 'invalid') { throw new RollcallError('invalidCredentials'); }
+              if (submitted === 'error') { throw new RollcallError('message', '学校未接受登录，请稍后重试'); }
+              if (submitted === 'blocked') {
+                throw new RollcallError('message', '学校登录表单未提交，请检查账号信息后重试');
+              }
               if (submitted === 'submitted') { didSubmit = true; this.setProgress('等待认证结果'); }
             }
           }
           if (result === 'filled' || result === 'manual') { phaseStarted = Date.now(); }
         } else if (state === 'switch' && !didSubmit) {
-          await this.evaluate(`(() => { if (location.protocol !== 'https:' || location.hostname !== 'ids.xmu.edu.cn') return 'waiting'; document.querySelector('a[href*="type=userNameLogin"]')?.click(); return 'waiting'; })()`, token);
+          await this.evaluate(WebAuthenticator.SWITCH_SCRIPT, token);
           this.setProgress('切换到账号密码登录');
         }
-        // Changed/unsupported forms must not leave the user behind a permanent spinner.
-        if (!didSubmit && !this.manual && state === 'waiting' && Date.now() - formWaitStarted > 10000) {
-          this.showManual();
-          phaseStarted = Date.now();
-        }
+        // Waiting for the document or the password-mode link is still automatic
+        // authentication. Only a real school challenge can require manual input.
       }
       const timeout = this.manual ? 180000 : 40000;
       if (Date.now() - phaseStarted > timeout || Date.now() - started > 240000) {
@@ -216,18 +231,23 @@ export class WebAuthenticator implements AuthPort {
   }
 
   private setProgress(text: string): void {
-    if (this.progress !== text) { this.progress = text; this.onChange(); }
+    if (this.progress !== text) {
+      this.progress = text;
+      // Phase labels contain neither credentials, authentication URLs nor page scripts.
+      console.info('[FreeRollcallAuth] ' + text);
+      this.onChange();
+    }
   }
 
   private pause(ms: number): Promise<void> {
     return new Promise<void>((resolve): void => { setTimeout((): void => { resolve(); }, ms); });
   }
 
-  private async evaluate(script: string, token: number): Promise<string> {
+  private async evaluate(script: string, token: number, timeoutMs: number = 5000): Promise<string> {
     this.check(token);
     let timer: number = -1;
     const timeout = new Promise<string>((resolve, reject): void => {
-      timer = setTimeout((): void => { reject(new RollcallError('message', '登录页面暂时无响应，请重试')); }, 5000);
+      timer = setTimeout((): void => { reject(new RollcallError('message', '登录页面暂时无响应，请重试')); }, timeoutMs);
     });
     try {
       const encoded = await Promise.race([this.controller.runJavaScript(script), timeout]);
@@ -269,26 +289,67 @@ export class WebAuthenticator implements AuthPort {
     const challengeVisible = scope => visible(scope && scope.querySelector('#captcha')) ||
       (visible(document.querySelector('#sliderCaptchaDiv')) && document.querySelector('#sliderCaptchaDiv').children.length > 0) ||
       visible(document.querySelector('#dynamicCode'));
+    const schoolReady = scope => {
+      if (!scope || document.readyState === 'loading') return false;
+      const jq = window.jQuery || window.$;
+      if (typeof jq !== 'function' || jq.isReady !== true ||
+          typeof window.checkForm !== 'function' || typeof window.encryptPassword !== 'function') return false;
+      const execution = scope.querySelector('input[name="execution"]');
+      const mode = scope.querySelector('input[name="cllt"]');
+      const salt = scope.querySelector('#pwdEncryptSalt');
+      // jQuery marks isReady before its asynchronous ready callbacks run. The school's
+      // callback removes the other forms; its handler reads the first global mode field.
+      return !!execution && !!execution.value && !!salt && !!salt.value &&
+        !!mode && mode.value === 'userNameLogin' && document.querySelector('#cllt') === mode;
+    };
+    const schoolSubmitted = scope => {
+      const password = scope && scope.querySelector('#password');
+      const encrypted = scope && scope.querySelector('#saltPassword');
+      return !!password && password.disabled && !!encrypted && !!encrypted.value;
+    };
+    const pageError = scope => {
+      const serverError = scope && (scope.querySelector('#showErrorTip') || scope.querySelector('#formErrorTip2'));
+      const toast = document.querySelector('#alert-box');
+      // The mobile page intentionally hides serverError and only exposes a short-lived global toast.
+      return [serverError ? serverError.textContent : '', visible(toast) ? toast.textContent : '']
+        .map(text => (text || '').trim()).filter(Boolean).join(' ');
+    };
+    const classifyError = text => {
+      if (!text) return '';
+      if (/网络|超时|服务异常|系统异常|network|timeout|unavailable/i.test(text)) return 'error';
+      if (/验证码|滑块|短信|动态码|验证身份|重置|禁用|锁定|captcha|locked/i.test(text)) return 'manual';
+      if (/账号|帐号|用户|密码|认证失败|登录失败|不允许|非法|username|password|credential/i.test(text)) return 'invalid';
+      return 'error';
+    };
   `;
 
   private static readonly OBSERVE_SCRIPT: string = `(() => {
     if (location.protocol !== 'https:' || location.hostname !== 'ids.xmu.edu.cn') return 'waiting';
-    if (document.readyState === 'loading') return 'waiting';
+    if (document.readyState === 'loading') return 'loading';
     ${WebAuthenticator.FORM_HELPERS}
     const scope = passwordScope();
-    const error = scope && (scope.querySelector('#showErrorTip') || scope.querySelector('#formErrorTip2'));
-    const text = visible(error) ? error.textContent.trim() : '';
-    if (text) {
-      if (/网络|超时|服务异常|系统异常|network|timeout|unavailable/i.test(text)) return 'error';
-      if (/验证码|滑块|短信|动态码|验证身份|重置|禁用|锁定|captcha|locked/i.test(text)) return 'manual';
-      if (/账号|帐号|用户|密码|认证失败|登录失败|不允许|非法|username|password|credential/i.test(text)) return 'invalid';
-      return 'manual';
-    }
+    const error = classifyError(pageError(scope));
+    if (error) return error;
     if (challengeVisible(scope)) return 'manual';
     const warning = scope && scope.querySelector('#showWarnTip');
     if (visible(warning) && warning.textContent.trim()) return 'manual';
-    if (scope) return 'ready';
-    if (visible(document.querySelector('a[href*="type=userNameLogin"]'))) return 'switch';
+    // A form navigation can discard runJavaScript's return value. Recover from the
+    // original handler's durable markers instead of filling and submitting again.
+    if (schoolSubmitted(scope)) return 'submitted';
+    if (scope) return schoolReady(scope) ? 'ready' : 'initializing';
+    const accountLink = document.querySelector('a[href*="type=userNameLogin"]');
+    if (visible(accountLink)) return accountLink.getAttribute('data-free-rollcall-switch') === 'pending' ? 'loading' : 'switch';
+    return 'waiting';
+  })()`;
+
+  private static readonly SWITCH_SCRIPT: string = `(() => {
+    if (location.protocol !== 'https:' || location.hostname !== 'ids.xmu.edu.cn') return 'waiting';
+    const link = document.querySelector('a[href*="type=userNameLogin"]');
+    if (!link || link.getAttribute('data-free-rollcall-switch') === 'pending') return 'waiting';
+    // The old document can remain visible while navigation is pending. Mark its
+    // own link so repeated polling cannot restart the same school navigation.
+    link.setAttribute('data-free-rollcall-switch', 'pending');
+    link.click();
     return 'waiting';
   })()`;
 
@@ -302,6 +363,7 @@ export class WebAuthenticator implements AuthPort {
       const username = ${accountLiteral}; const password = ${passwordLiteral};
       const scope = passwordScope();
       if (!scope) return 'waiting';
+      if (!schoolReady(scope)) return 'initializing';
       const u = scope.querySelector('#username');
       const p = scope.querySelector('#password');
       const button = scope.querySelector('#login_submit');
@@ -319,9 +381,16 @@ export class WebAuthenticator implements AuthPort {
     if (document.readyState === 'loading') return 'waiting';
     ${WebAuthenticator.FORM_HELPERS}
     const scope = passwordScope();
+    if (!schoolReady(scope)) return 'initializing';
     if (challengeVisible(scope)) return 'manual';
     const button = scope && scope.querySelector('#login_submit');
     if (!button) return 'waiting';
-    button.click(); return 'submitted';
+    button.click();
+    const error = classifyError(pageError(scope));
+    if (error) return error;
+    if (challengeVisible(scope) || window.needCaptcha === true || window.needCaptcha === 'true') return 'manual';
+    // Both school login handlers set these only after their own validation and encryption succeed.
+    // A click with an absent/rejected handler must never be reported as a submitted form.
+    return schoolSubmitted(scope) ? 'submitted' : 'blocked';
   })()`;
 }

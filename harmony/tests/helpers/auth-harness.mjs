@@ -49,7 +49,12 @@ class Element {
   events = [];
   getClientRects() { return this.visible && (!this.parentElement || this.parentElement.getClientRects().length) ? [{}] : []; }
   append(child) { child.parentElement = this; this.children.push(child); return child; }
+  remove() {
+    if (this.parentElement) { this.parentElement.children = this.parentElement.children.filter(child => child !== this); }
+    this.parentElement = undefined;
+  }
   getAttribute(name) { return this.attributes[name] ?? null; }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
   querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; }
   querySelectorAll(selector) { return selectElements(this.children, selector); }
   focus() {}
@@ -113,10 +118,13 @@ export function createAuthHarness() {
   let now = Date.parse('2026-10-22T00:00:00Z');
   const state = {
     url: 'about:blank', requests: [], controllers: [], scriptResults: [], scriptStarts: [], cookieReads: [], events: [],
-    cleared: [], submitted: 0, stopped: 0, ready: false, requestFailure: undefined,
+    userAgentChanges: [], loads: [], transitions: [], loginModeSwitches: [], cookie: 'session=offline-school-session',
+    cleared: [], submitted: 0, clicks: 0, stopped: 0, ready: false, requestFailure: undefined,
     rawScriptResults: [], profileGate: undefined, cookieDelay: 0,
     profile: { id: '42', user_no: 'student', name: '测试用户' }, nodes: new Map(), roots: [], layout: 'mobile',
-    onLoad: undefined, onSubmit: undefined, onEvaluate: undefined
+    onLoad: undefined, onSubmit: undefined, onEvaluate: undefined, onScriptResult: undefined, onCheckForm: undefined,
+    onLoginModeSwitch: undefined,
+    bindSubmitHandler: true, pageWindow: {}
   };
   const globals = {
     Date: class extends Date { static now() { return now; } },
@@ -169,34 +177,49 @@ export function createAuthHarness() {
     } },
     '@kit.ArkWeb': { webview: {
       WebviewController: class {
+        userAgent = 'ArkWeb Offline Mobile Test';
         constructor() { state.controllers.push(this); }
         stop() { state.stopped++; }
         getUrl() { return state.url; }
-        getUserAgent() { return 'ArkWeb Offline Mobile Test'; }
-        loadUrl(url) { state.url = url; state.onLoad?.(url); }
+        getUserAgent() { return this.userAgent; }
+        setCustomUserAgent(value) {
+          this.userAgent = value;
+          state.userAgentChanges.push({ controller: this, value });
+          state.events.push('user-agent');
+        }
+        loadUrl(url) {
+          state.loads.push({ url, userAgent: this.userAgent, controller: this, cleared: state.cleared.length });
+          state.events.push('load');
+          state.url = url;
+          state.onLoad?.(url);
+        }
         async runJavaScript(script) {
           state.scriptStarts.push({ script, controller: this });
           await state.onEvaluate?.(script, this);
           if (state.rawScriptResults.length) { return state.rawScriptResults.shift(); }
           const location = new URL(state.url);
           const result = await vm.runInNewContext(script, {
-            location, document, window: { location },
+            ...state.pageWindow, location, document, window: { ...state.pageWindow, location },
             Event: class { constructor(type) { this.type = type; } },
             HTMLInputElement: Element,
             getComputedStyle: element => ({ visibility: element.visible ? 'visible' : 'hidden', display: element.visible ? 'block' : 'none' })
           }, { timeout: 1000 });
           state.scriptResults.push(result);
-          return JSON.stringify(result);
+          return state.onScriptResult ? state.onScriptResult(result, script) : JSON.stringify(result);
         }
       },
       WebCookieManager: {
-        clearAllCookiesSync(incognito) { state.cleared.push(incognito); },
+        clearAllCookiesSync(incognito) {
+          state.cleared.push(incognito);
+          state.events.push('clear-cookies');
+          state.ready = false;
+        },
         putAcceptThirdPartyCookieEnabled(enabled) { assert.equal(enabled, false); },
         fetchCookieSync(url, incognito) {
           state.cookieReads.push({ url, incognito });
           assert.equal(incognito, true);
           if (state.cookieDelay > 0) { state.cookieDelay--; return ''; }
-          return state.ready ? 'session=offline-school-session' : '';
+          return state.ready ? state.cookie : '';
         }
       }
     } }
@@ -205,28 +228,49 @@ export function createAuthHarness() {
   const auth = new WebAuthenticator();
   const attached = new Set();
   auth.onChange = () => {
+    state.transitions.push({ active: auth.active, manual: auth.manual, progress: auth.progress, time: now });
     if (auth.active && !attached.has(auth.viewID)) {
       attached.add(auth.viewID);
       auth.onControllerAttached(auth.viewID);
     }
   };
   return {
-    auth, state,
+    auth, state, document,
+    elapsed: () => now - Date.parse('2026-10-22T00:00:00Z'),
     navigate(url, { begin = true, end = false, visible = false, id = auth.viewID } = {}) {
       state.url = url;
       if (begin) { state.events.push('begin'); auth.onPageBegin(url, id); }
       if (end) { state.events.push('end'); auth.onPageEnd(url, id); }
       if (visible) { state.events.push('visible'); auth.onPageVisible?.(url, id); }
     },
-    showPasswordForm({ layout = 'mobile', captcha = false, hiddenSMS = true } = {}) {
+    showAccountLoginLink({ href = '/authserver/login?type=userNameLogin', visible = true } = {}) {
+      state.nodes.clear();
+      state.roots = [];
+      state.pageWindow = {};
+      const link = new Element('account-login-link', 'A', { href });
+      link.visible = visible;
+      link.onClick = () => {
+        state.loginModeSwitches.push(href);
+        state.onLoginModeSwitch?.(href);
+      };
+      state.roots.push(link);
+      state.nodes.set(link.id, link);
+      return link;
+    },
+    showPasswordForm({ layout = 'mobile', captcha = false, hiddenSMS = true, hiddenLoginMode } = {}) {
       state.nodes.clear();
       state.roots = [];
       state.layout = layout;
       let hidden;
+      let hiddenMode;
       if (hiddenSMS) {
         hidden = new Element('phoneLoginDiv'); hidden.visible = false;
         const form = hidden.append(new Element('loginFromId', 'FORM'));
         for (const id of ['username', 'password', 'login_submit']) { form.append(new Element(id, id === 'login_submit' ? 'BUTTON' : 'INPUT')); }
+        if (hiddenLoginMode) {
+          hiddenMode = form.append(new Element('cllt', 'INPUT', { name: 'cllt', type: 'hidden' }));
+          hiddenMode.value = hiddenLoginMode;
+        }
         state.roots.push(hidden);
       }
       const container = new Element(layout === 'mobile' ? 'pwdLoginDiv' : 'pwdFromId', layout === 'mobile' ? 'DIV' : 'FORM');
@@ -240,18 +284,66 @@ export function createAuthHarness() {
         }));
         state.nodes.set(id, input);
       }
-      state.nodes.get('login_submit').onClick = () => { state.submitted++; state.onSubmit?.(); };
+      // Mirror the public school page's actual password form rather than treating a click as a submission.
+      for (const [id, name, value] of [
+        ['saltPassword', 'password', ''], ['execution', 'execution', 'offline-execution'],
+        ['cllt', 'cllt', 'userNameLogin'], ['pwdEncryptSalt', '', 'offline-salt']
+      ]) {
+        const input = form.append(new Element(id, 'INPUT', { type: 'hidden', name }));
+        input.visible = false;
+        input.value = value;
+        state.nodes.set(id, input);
+      }
+      state.pageWindow = {
+        needCaptcha: false, captchaSwitch: '2',
+        jQuery: Object.assign(() => {}, { isReady: true }),
+        encryptPassword: () => 'offline-encrypted-password',
+        checkForm: () => {
+          if (state.onCheckForm && !state.onCheckForm()) { return false; }
+          state.nodes.get('saltPassword').value = state.pageWindow.encryptPassword(
+            state.nodes.get('password').value, state.nodes.get('pwdEncryptSalt').value);
+          state.nodes.get('password').disabled = true;
+          return true;
+        }
+      };
+      state.pageWindow.$ = state.pageWindow.jQuery;
+      state.nodes.get('login_submit').onClick = () => {
+        state.clicks++;
+        if (!state.bindSubmitHandler || !state.pageWindow.checkForm()) { return; }
+        if (state.pageWindow.needCaptcha && state.pageWindow.captchaSwitch === '2') {
+          const container = new Element('sliderCaptchaDiv');
+          container.append(new Element('slider-child'));
+          state.roots.push(container);
+          state.nodes.set(container.id, container);
+          return;
+        }
+        state.submitted++;
+        state.onSubmit?.();
+      };
       if (captcha) { state.nodes.set('captcha', form.append(new Element('captcha', 'INPUT'))); }
       return {
         username: state.nodes.get('username'), password: state.nodes.get('password'),
-        hiddenUsername: hidden?.querySelector('#username'), hiddenPassword: hidden?.querySelector('#password')
+        hiddenUsername: hidden?.querySelector('#username'), hiddenPassword: hidden?.querySelector('#password'), hiddenMode
       };
     },
-    showError(message) {
+    showError(message, { visible = true, toast = false } = {}) {
       const id = state.layout === 'mobile' ? 'formErrorTip2' : 'showErrorTip';
       const element = new Element(id); element.textContent = message;
+      element.visible = visible;
       state.nodes.set(id, element);
       state.roots.at(-1).append(element);
+      if (toast) {
+        const alert = new Element('alert-box');
+        alert.textContent = message;
+        state.roots.push(alert);
+        state.nodes.set(alert.id, alert);
+      }
+    },
+    showToast(message) {
+      const alert = new Element('alert-box');
+      alert.textContent = message;
+      state.roots.push(alert);
+      state.nodes.set(alert.id, alert);
     },
     showSliderChallenge(visible) {
       const container = new Element('sliderCaptchaDiv');
