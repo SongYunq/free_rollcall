@@ -1,0 +1,6 @@
+{
+  "string": [
+    { "name": "app_name", "value": "free_rollcall" },
+    { "name": "module_desc", "value": "课程与签到管理" }
+  ]
+}

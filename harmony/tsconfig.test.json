@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "strict": true,
+    "noEmitOnError": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "rootDir": "entry/src/main/ets",
+    "outDir": ".build",
+    "lib": ["ES2021", "DOM"]
+  },
+  "include": ["entry/src/main/ets/core/**/*.ts", "entry/src/main/ets/app/**/*.ts"]
+}

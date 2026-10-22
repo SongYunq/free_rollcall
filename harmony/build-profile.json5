@@ -1,0 +1,50 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "/Users/prina/.ohos/config/default_harmony_pcmhXfGBO8ctGFJ_UjZuArlvTXvLybPZ_CEgfbtaUmI=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001AB7F2DC9486EF78C1E52C07844EA57F3A1D77F8924EE731D25CC06E4E65F928775E21A34CB6AD",
+          "profile": "/Users/prina/.ohos/config/default_harmony_pcmhXfGBO8ctGFJ_UjZuArlvTXvLybPZ_CEgfbtaUmI=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "/Users/prina/.ohos/config/default_harmony_pcmhXfGBO8ctGFJ_UjZuArlvTXvLybPZ_CEgfbtaUmI=.p12",
+          "storePassword": "0000001AAFB390A7B07AA583642E70625F372AE8A8A5C73FE7167F87192C47569BBF3B02E4D3BEEEC932"
+        }
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compatibleSdkVersion": "5.0.0(12)",
+        "targetSdkVersion": "5.0.0(12)",
+        "runtimeOS": "HarmonyOS"
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "default"
+      },
+      {
+        "name": "default"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "modelVersion": "6.0.1",
+  "name": "free-rollcall",
+  "version": "1.0.0",
+  "description": "free_rollcall native HarmonyOS client",
+  "dependencies": {},
+  "devDependencies": {}
+}

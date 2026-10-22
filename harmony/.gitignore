@@ -1,0 +1,16 @@
+.hvigor/
+.idea/
+oh_modules/
+**/oh_modules/
+**/build/
+.build/
+node_modules/
+local.properties
+*.p12
+*.cer
+*.p7b
+*.csr
+*.jks
+*.keystore
+signing/
+*.log

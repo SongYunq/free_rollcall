@@ -1,0 +1,10 @@
+{
+  "name": "free-rollcall-harmony-checks",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node scripts/test.mjs",
+    "check:project": "node scripts/check-project.mjs"
+  },
+  "devDependencies": { "typescript": "5.9.3" }
+}
