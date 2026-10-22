@@ -44,12 +44,20 @@ private actor FixtureTransport: HTTPTransport {
         } else if request.path == "/api/radar/rollcalls" { body = .object(["rollcalls": .array([])]) }
         else if request.path.contains("/student/") {
             let courseID = String(request.path.split(separator: "/")[2])
-            body = .object(["rollcalls": .array([
+            let page = URLComponents(string: request.path)?.queryItems?.first(where: { $0.name == "page" })?.value
+            let records: [JSONValue]
+            switch page {
+            case "1": records = [
                 record("701", courseID: courseID, radar: false, active: true, includeCode: false),
-                record("702", courseID: courseID, radar: true, active: true),
+                record("702", courseID: courseID, radar: true, active: true)
+            ]
+            case "2": records = [
                 record("703", courseID: courseID, radar: false, active: false, includeCode: false),
                 record("704", courseID: courseID, radar: false, active: false, includeCode: false)
-            ]), "pages": .number(1)])
+            ]
+            default: throw RollcallError.message("演示查询的签到页码无效")
+            }
+            body = .object(["rollcalls": .array(records), "pages": .number(2)])
         } else if request.path.hasPrefix("/api/timetable_rollcalls?") {
             let query = URLComponents(string: request.path)?.queryItems ?? []
             guard let courseID = query.first(where: { $0.name == "course_ids" })?.value,
@@ -63,14 +71,26 @@ private actor FixtureTransport: HTTPTransport {
                 fields["id"] = .string(id)
                 fields["course"] = .object(["id": .string(courseID), "name": .string("软件工程与实践")])
                 fields["status"] = .string(active ? "active" : "finished")
-                fields["student_rollcalls"] = .array([.object([
-                    "student_id": .string(studentID),
-                    "status": .string(answered.contains(id) || id == "703" ? "on_call" : "absent")
-                ])])
+                fields["student_rollcalls"] = .array(studentRollcalls(for: id))
                 return .object(fields)
             })])
         } else { throw RollcallError.message("演示数据未提供此操作") }
         return APIResponse(status: 200, data: try body.encoded())
+    }
+    private func studentRollcalls(for id: String) -> [JSONValue] {
+        let otherStatuses: [String]
+        switch id {
+        case "701": otherStatuses = ["on_call_fine", "on_call_late", "absent"]
+        case "703": otherStatuses = ["on_call", "on_call_fine", "on_call_late"]
+        default: otherStatuses = ["on_call", "absent", "absent"]
+        }
+        let own: JSONValue = .object([
+            "student_id": .string(studentID),
+            "status": .string(answered.contains(id) || id == "703" ? "on_call" : "absent")
+        ])
+        return [own] + otherStatuses.enumerated().map { index, status in
+            .object(["student_id": .string("9100\(index + 1)"), "status": .string(status)])
+        }
     }
     private func record(_ id: String, courseID: String, radar: Bool, active: Bool, includeCode: Bool = true) -> JSONValue {
         .object(["rollcall_id": .string(id), "course_id": .string(courseID), "is_number": .bool(!radar), "is_radar": .bool(radar),

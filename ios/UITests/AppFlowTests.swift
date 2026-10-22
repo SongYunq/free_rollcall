@@ -1,7 +1,7 @@
 import XCTest
 
 final class AppFlowTests: XCTestCase {
-    @MainActor func testHistoryCodesKeepAnsweredAndAbsentRowsDistinct() throws {
+    @MainActor func testHistoryCountsKeepAnsweredAndAbsentRowsDistinct() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-fixture"]
         app.launch()
@@ -9,22 +9,42 @@ final class AppFlowTests: XCTestCase {
         app.buttons["enter-courses"].tap()
         let course = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "软件工程与实践")).firstMatch
         XCTAssertTrue(course.waitForExistence(timeout: 5)); course.tap()
-        for (id, status) in [("701", "正在签到"), ("703", "已签到"), ("704", "缺勤")] {
+        for (id, status, count) in [("701", "正在签到", "2/4"), ("702", "正在签到", "1/4"),
+                                    ("703", "已签到", "4/4"), ("704", "缺勤", "1/4")] {
             let row = app.buttons["attendance-\(id)"]
             XCTAssertTrue(row.waitForExistence(timeout: 5))
             for _ in 0..<4 {
                 if row.isHittable { break }
                 app.swipeUp()
             }
-            let loaded = NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "签到码  0123", status)
+            let codeOrKind = id == "702" ? "雷达签到" : "签到码  0123"
+            let loaded = NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@ AND label CONTAINS %@", codeOrKind, status, count)
             expectation(for: loaded, evaluatedWith: row)
             waitForExpectations(timeout: 5)
+            let counts = row.staticTexts["attendance-counts-\(id)"]
+            XCTAssertEqual(counts.label, count)
+            XCTAssertGreaterThan(counts.frame.minX, row.frame.midX, "人数应位于条目右侧")
+            XCTAssertLessThanOrEqual(counts.frame.maxX, row.frame.maxX, "人数应完整显示在条目内")
+            XCTAssertFalse(row.label.contains("已签到/总人数"))
+            let state = row.staticTexts["attendance-status-\(id)"]
+            XCTAssertEqual(state.label, status)
+            XCTAssertGreaterThan(state.frame.minY, counts.frame.maxY, "签到状态应位于人数下方")
+            XCTAssertEqual(state.frame.maxX, counts.frame.maxX, accuracy: 1, "人数和签到状态应右对齐")
+            if id != "702" {
+                let code = row.staticTexts["attendance-code-\(id)"]
+                XCTAssertEqual(state.frame.midY, code.frame.midY, accuracy: 1, "签到状态应与左侧签到码在同一行")
+            }
             if id != "704" { XCTAssertFalse(row.label.contains("缺勤")) }
             XCTAssertFalse(app.navigationBars["签到详情"].exists)
+            XCTAssertFalse(app.buttons["加载更多记录"].exists)
             if id == "703" {
                 row.tap()
                 XCTAssertTrue(app.navigationBars["签到详情"].waitForExistence(timeout: 5))
                 XCTAssertTrue(app.staticTexts["已签到"].waitForExistence(timeout: 5))
+                let detailCounts = app.descendants(matching: .any)["attendance-detail-counts"].firstMatch
+                XCTAssertTrue(detailCounts.waitForExistence(timeout: 5))
+                XCTAssertTrue(detailCounts.label.contains("签到人数"))
+                XCTAssertTrue(detailCounts.label.contains("4/4"))
                 app.buttons["完成"].tap()
                 XCTAssertTrue(row.waitForExistence(timeout: 5))
                 expectation(for: NSPredicate(format: "label CONTAINS %@", "已签到"), evaluatedWith: row)
@@ -67,7 +87,7 @@ final class AppFlowTests: XCTestCase {
         XCTAssertTrue(home.isSelected)
     }
 
-    @MainActor func testLargeTextStillShowsAllFourAccountActions() throws {
+    @MainActor func testLargeTextKeepsAccountActionsAndAttendanceCountsReadable() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-fixture", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         app.launch()
@@ -85,6 +105,29 @@ final class AppFlowTests: XCTestCase {
             XCTAssertTrue(button.isHittable, title)
             XCTAssertLessThan(button.frame.maxY, app.buttons["账号管理"].frame.minY, "\(title) 应完整显示在底栏上方")
         }
+        app.buttons["功能"].tap()
+        app.buttons["enter-courses"].tap()
+        let course = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "软件工程与实践")).firstMatch
+        XCTAssertTrue(course.waitForExistence(timeout: 5)); course.tap()
+        let attendance = app.buttons["attendance-701"]
+        XCTAssertTrue(attendance.waitForExistence(timeout: 5))
+        let counts = attendance.staticTexts["attendance-counts-701"]
+        for _ in 0..<5 {
+            if counts.isHittable { break }
+            app.swipeUp()
+        }
+        expectation(for: NSPredicate(format: "label == %@", "2/4"), evaluatedWith: counts)
+        waitForExpectations(timeout: 5)
+        XCTAssertTrue(counts.isHittable)
+        XCTAssertGreaterThan(counts.frame.minX, attendance.frame.midX)
+        XCTAssertLessThanOrEqual(counts.frame.maxX, app.frame.maxX - 12)
+        XCTAssertTrue(attendance.label.contains("正在签到"))
+        XCTAssertFalse(attendance.label.contains("已签到/总人数"))
+        let state = attendance.staticTexts["attendance-status-701"]
+        let code = attendance.staticTexts["attendance-code-701"]
+        XCTAssertTrue(state.exists)
+        XCTAssertGreaterThan(state.frame.minY, counts.frame.maxY)
+        XCTAssertEqual(state.frame.midY, code.frame.midY, accuracy: 1)
     }
     @MainActor func testThreePagesLeftSwipeAndAttendanceFlow() throws {
         let app = XCUIApplication()
@@ -113,8 +156,14 @@ final class AppFlowTests: XCTestCase {
         course.tap()
         let attendance = app.buttons.matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "数字签到", "点击此条目签到")).firstMatch
         XCTAssertTrue(attendance.waitForExistence(timeout: 5))
+        expectation(for: NSPredicate(format: "label CONTAINS %@", "2/4"), evaluatedWith: attendance)
+        waitForExpectations(timeout: 5)
         attendance.tap()
         XCTAssertTrue(app.staticTexts["签到成功"].waitForExistence(timeout: 5))
+        let submitted = app.buttons["attendance-701"]
+        expectation(for: NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "已签到", "3/4"), evaluatedWith: submitted)
+        waitForExpectations(timeout: 5)
+        XCTAssertFalse(submitted.label.contains("点击此条目签到"))
         app.buttons["本地日志"].tap()
         XCTAssertTrue(app.navigationBars["本地日志"].waitForExistence(timeout: 3))
     }
