@@ -44,12 +44,20 @@ private actor FixtureTransport: HTTPTransport {
         } else if request.path == "/api/radar/rollcalls" { body = .object(["rollcalls": .array([])]) }
         else if request.path.contains("/student/") {
             let courseID = String(request.path.split(separator: "/")[2])
-            body = .object(["rollcalls": .array([
+            let page = URLComponents(string: request.path)?.queryItems?.first(where: { $0.name == "page" })?.value
+            let records: [JSONValue]
+            switch page {
+            case "1": records = [
                 record("701", courseID: courseID, radar: false, active: true, includeCode: false),
-                record("702", courseID: courseID, radar: true, active: true),
+                record("702", courseID: courseID, radar: true, active: true)
+            ]
+            case "2": records = [
                 record("703", courseID: courseID, radar: false, active: false, includeCode: false),
                 record("704", courseID: courseID, radar: false, active: false, includeCode: false)
-            ]), "pages": .number(1)])
+            ]
+            default: throw RollcallError.message("演示查询的签到页码无效")
+            }
+            body = .object(["rollcalls": .array(records), "pages": .number(2)])
         } else if request.path.hasPrefix("/api/timetable_rollcalls?") {
             let query = URLComponents(string: request.path)?.queryItems ?? []
             guard let courseID = query.first(where: { $0.name == "course_ids" })?.value,

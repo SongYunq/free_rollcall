@@ -158,7 +158,7 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
             courses = data
         } catch { if token == courseRequest { coursesError = error.localizedDescription } }
     }
-    func loadHistory(course: Course, reset: Bool) async {
+    func loadHistory(course: Course) async {
         guard !isSubmitting, !preparingSubmission, !(loadingHistory && historyCourseID == course.id) else { return }
         let token = UUID(); historyRequest = token; loadingHistory = true; historyError = nil
         defer { if historyRequest == token { loadingHistory = false } }
@@ -167,27 +167,44 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
             historyPage = PageAccumulator(); records = []; detailEpoch = UUID()
             countRequests = [:]
         }
-        if reset || changedCourse { operationMessage = nil; detailEpoch = UUID() }
+        operationMessage = nil; detailEpoch = UUID()
         historyCourseID = course.id
-        let page = reset ? 1 : historyPage.nextPage
+        let cached = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+        var loaded = PageAccumulator<Attendance>()
+        var publishedIDs: Set<String> = []
+        var refreshedIDs: Set<String> = []
         do {
-            let data = try await read { try await $0.client.history(courseID: course.id, studentID: $0.profile.id, page: page) }
-            guard token == historyRequest else { return }
-            let visible = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
-            if reset { historyPage = PageAccumulator() }
-            historyPage.append(data)
-            // Loading older pages must retain already fetched codes and freshly confirmed results.
-            records = historyPage.items.map {
-                var record = reset ? $0 : visible[$0.id] ?? $0
-                if reset, let previous = visible[$0.id] {
-                    record.numberCode = record.numberCode ?? previous.numberCode
-                    record.attendanceCounts = record.attendanceCounts ?? previous.attendanceCounts
-                    if record.kind == .unknown { record.kind = previous.kind }
+            repeat {
+                let data: DataPage<Attendance>
+                do {
+                    try Task.checkCancellation()
+                    let page = loaded.nextPage
+                    data = try await read { try await $0.client.history(courseID: course.id, studentID: $0.profile.id, page: page) }
+                } catch {
+                    guard token == historyRequest, !Task.isCancelled, error as? RollcallError != .cancelled else { return }
+                    if publishedIDs.isEmpty { throw error }
+                    historyError = "部分签到记录未获取，可下拉刷新重试（\(error.localizedDescription)）"
+                    break
                 }
-                record.courseID = record.courseID ?? course.id
-                record.courseName = record.courseName ?? course.name
-                return record
-            }
+                guard token == historyRequest, !Task.isCancelled else { return }
+                loaded.append(data); historyPage = loaded
+                let visible = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+                records = loaded.items.map {
+                    // A refreshed history state wins initially; later pages retain details confirmed while loading.
+                    var record = publishedIDs.contains($0.id) ? visible[$0.id] ?? $0 : $0
+                    if let previous = visible[$0.id] ?? cached[$0.id] {
+                        record.numberCode = record.numberCode ?? previous.numberCode
+                        record.attendanceCounts = record.attendanceCounts ?? previous.attendanceCounts
+                        if record.kind == .unknown { record.kind = previous.kind }
+                    }
+                    record.courseID = record.courseID ?? course.id
+                    record.courseName = record.courseName ?? course.name
+                    return record
+                }
+                records.sort { a, b in a.isActive != b.isActive ? a.isActive : (a.date ?? .distantPast) > (b.date ?? .distantPast) }
+                publishedIDs.formUnion(loaded.items.map(\.id))
+                refreshedIDs.formUnion(data.items.filter { $0.attendanceCounts == nil || Self.needsCode($0) }.map(\.id))
+            } while loaded.hasMore
             // Active endpoint may include activities not yet visible in history. Only merge a proven course match.
             var activeIDs: Set<String> = []
             do {
@@ -202,12 +219,12 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
                 }
             } catch {
                 guard token == historyRequest else { return }
-                historyError = "历史记录已加载，当前活动刷新失败，可下拉重试"
+                let message = "历史记录已加载，当前活动刷新失败，可下拉重试"
+                historyError = historyError.map { "\($0)；\(message)" } ?? message
             }
             records.sort { a, b in a.isActive != b.isActive ? a.isActive : (a.date ?? .distantPast) > (b.date ?? .distantPast) }
             // Counts are needed for every kind, even when the number code is already present.
-            // Refresh the fetched page while retaining cached details until new data arrives.
-            let refreshedIDs = Set(data.items.filter { $0.attendanceCounts == nil || Self.needsCode($0) }.map(\.id))
+            // Refresh all fetched history while retaining cached details until new data arrives.
             let missing = records.filter {
                 $0.attendanceCounts == nil || Self.needsCode($0) || refreshedIDs.contains($0.id) || activeIDs.contains($0.id)
             }

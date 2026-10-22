@@ -130,14 +130,11 @@ struct HistoryView: View {
             else if state.records.isEmpty && state.historyError == nil {
                 ContentUnavailableView("暂无签到记录", systemImage: "list.bullet.rectangle").listRowSeparator(.hidden)
             }
-            if state.historyPage.hasMore && !state.loadingHistory {
-                Button("加载更多记录") { Task { await state.loadHistory(course: course, reset: false) } }
-                    .frame(maxWidth: .infinity).disabled(state.busy)
-            } else if !state.historyPage.note.isEmpty { MessageRow(text: state.historyPage.note) }
+            if !state.loadingHistory && !state.historyPage.note.isEmpty { MessageRow(text: state.historyPage.note) }
         }
         .pageList().navigationTitle("课程签到").navigationBarTitleDisplayMode(.inline)
-        .task(id: course.id) { await state.loadHistory(course: course, reset: true) }
-        .refreshable { await state.loadHistory(course: course, reset: true) }
+        .task(id: course.id) { await state.loadHistory(course: course) }
+        .refreshable { await state.loadHistory(course: course) }
         .sheet(item: $selected) { record in AttendanceDetail(state: state, course: course, initial: record) }
     }
     private func statusText(_ record: Attendance) -> some View {

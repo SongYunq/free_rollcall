@@ -36,6 +36,7 @@ final class AppFlowTests: XCTestCase {
             }
             if id != "704" { XCTAssertFalse(row.label.contains("缺勤")) }
             XCTAssertFalse(app.navigationBars["签到详情"].exists)
+            XCTAssertFalse(app.buttons["加载更多记录"].exists)
             if id == "703" {
                 row.tap()
                 XCTAssertTrue(app.navigationBars["签到详情"].waitForExistence(timeout: 5))
