@@ -7,11 +7,14 @@ import { RollcallError } from '../core/Errors';
 export class HarmonyTransport implements HTTPTransport {
   static readonly BASE: string = 'https://lnt.xmu.edu.cn';
   private cookie: string;
+  private userAgent: string;
 
-  constructor(cookie: string) {
+  constructor(cookie: string, userAgent: string = '') {
     // Header injection must not be possible even if a Web engine returns malformed data.
     if (/[\r\n]/.test(cookie)) { throw new RollcallError('message', '登录状态格式无效，请重新登录'); }
     this.cookie = cookie;
+    this.userAgent = userAgent.length > 0 && !/[\r\n]/.test(userAgent) ? userAgent :
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
   }
 
   async send(request: APIRequest): Promise<APIResponse> {
@@ -23,7 +26,7 @@ export class HarmonyTransport implements HTTPTransport {
     }
     const headers: rcp.RequestHeaders = {
       'Accept-Language': 'zh-CN,zh;q=0.9',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'User-Agent': this.userAgent,
       'Accept': request.radarHeaders ? 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' : 'application/json, text/plain, */*',
       'Referer': request.radarHeaders ? 'https://ids.xmu.edu.cn/authserver/login' : 'https://lnt.xmu.edu.cn/user/index',
       'Cookie': this.cookie,

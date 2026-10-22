@@ -26,6 +26,7 @@ class ViewState {
   hasMore: boolean = false;
   authActive: boolean = false;
   authManual: boolean = false;
+  authVerifying: boolean = false;
   authProgress: string = '';
   authAccount: string = '';
   authViewID: number = 0;
@@ -52,6 +53,7 @@ class ViewState {
     result.hasMore = model.hasMore;
     result.authActive = runtime.authenticator.active;
     result.authManual = runtime.authenticator.manual;
+    result.authVerifying = runtime.authenticator.verifying;
     result.authProgress = runtime.authenticator.progress;
     result.authAccount = runtime.authenticator.displayAccount;
     result.authViewID = runtime.authenticator.viewID;
@@ -487,16 +489,16 @@ struct Index {
   @Builder
   private accountActions(account: SavedAccount) {
     Row() {
-      Button('登录', { type: ButtonType.Normal }).height('100%').width(58).fontSize(14)
+      Button('登录', { type: ButtonType.Normal }).height('100%').width(58).fontSize(14).padding(0)
         .fontColor(Color.White).backgroundColor('#181818').enabled(!this.view.busy)
         .onClick((): void => this.perform(async (): Promise<void> => { await this.model().login(account.id); }))
-      Button('修改', { type: ButtonType.Normal }).height('100%').width(58).fontSize(14)
+      Button('修改', { type: ButtonType.Normal }).height('100%').width(58).fontSize(14).padding(0)
         .fontColor(Color.White).backgroundColor('#7C7C7C').enabled(!this.view.busy)
         .onClick((): void => this.openEditor(account))
-      Button('默认', { type: ButtonType.Normal }).height('100%').width(58).fontSize(14)
+      Button('默认', { type: ButtonType.Normal }).height('100%').width(58).fontSize(14).padding(0)
         .fontColor(Color.White).backgroundColor('#525252').enabled(!this.view.busy)
         .onClick((): void => this.perform(async (): Promise<void> => { await this.model().makeDefault(account.id); }))
-      Button('删除', { type: ButtonType.Normal }).height('100%').width(58).fontSize(14)
+      Button('删除', { type: ButtonType.Normal }).height('100%').width(58).fontSize(14).padding(0)
         .fontColor(Color.White).backgroundColor('#CB3838').enabled(!this.view.busy)
         .onClick((): void => { this.deletingID = account.id; })
     }.height('100%')
@@ -642,7 +644,8 @@ struct Index {
       Row() {
         Button('取消').fontSize(16).fontColor('#444444').backgroundColor(Color.Transparent)
           .height(44).width(64).onClick((): void => this.cancelAuthentication())
-        Text(this.view.authManual ? '网页登录' : '登录账号').fontSize(17).fontWeight(FontWeight.Medium).fontColor('#222222')
+        Text(this.view.authVerifying ? '正在进入课程' : (this.view.authManual ? '完成学校认证' : '登录账号'))
+          .fontSize(17).fontWeight(FontWeight.Medium).fontColor('#222222')
           .layoutWeight(1).textAlign(TextAlign.Center)
         Blank().width(64)
       }.width('100%').height(60).padding({ left: 12, right: 12 })
@@ -651,9 +654,9 @@ struct Index {
           ForEach([this.view.authViewID], (id: number) => {
             Web({ src: 'about:blank', controller: this.runtime!.authenticator.controller, incognitoMode: true })
               .javaScriptAccess(true).domStorageAccess(true).fileAccess(false).mixedMode(MixedMode.None)
-              .width('100%').height('100%').opacity(this.view.authManual ? 1 : 0)
-              .hitTestBehavior(this.view.authManual ? HitTestMode.Default : HitTestMode.None)
-              .accessibilityLevel(this.view.authManual ? 'auto' : 'no-hide-descendants')
+              .width('100%').height('100%').opacity(this.view.authManual && !this.view.authVerifying ? 1 : 0)
+              .hitTestBehavior(this.view.authManual && !this.view.authVerifying ? HitTestMode.Default : HitTestMode.None)
+              .accessibilityLevel(this.view.authManual && !this.view.authVerifying ? 'auto' : 'no-hide-descendants')
               .onControllerAttached((): void => {
                 if (this.runtime?.authenticator.viewID === id) { this.runtime.authenticator.onControllerAttached(); }
               })
@@ -665,22 +668,21 @@ struct Index {
               })
               .onErrorReceive((event): void => {
                 if (this.runtime?.authenticator.viewID === id && event?.request.isMainFrame()) {
-                  this.runtime.authenticator.onNavigationError();
+                  this.runtime.authenticator.onNavigationError(event.error.getErrorCode());
                 }
               })
               .onLoadIntercept((event): boolean => {
                 if (this.runtime?.authenticator.viewID !== id) { return true; }
+                if (event?.data.isMainFrame() === false) { return false; }
                 return this.runtime.authenticator.urlLoadIntercept(event?.data.getRequestUrl() ?? '');
               })
           }, (id: number): string => id.toString())
         }
-        if (!this.view.authManual) {
+        if (!this.view.authManual || this.view.authVerifying) {
           Column({ space: 20 }) {
             LoadingProgress().width(42).height(42).color('#777777')
             Text(this.view.authProgress).fontSize(18).fontWeight(FontWeight.Medium).fontColor('#222222').textAlign(TextAlign.Center)
             Text(this.view.authAccount).fontSize(14).fontFamily('monospace').fontColor('#777777')
-            Button('手动完成网页登录').fontSize(14).fontColor('#666666').backgroundColor(Color.Transparent)
-              .margin({ top: 20 }).onClick((): void => { this.runtime?.authenticator.showManual(); })
           }.width('100%').padding(24)
         }
       }.layoutWeight(1).width('100%')

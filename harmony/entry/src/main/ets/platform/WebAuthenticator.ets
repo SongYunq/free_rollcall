@@ -9,13 +9,13 @@ export class WebAuthenticator implements AuthPort {
   controller: webview.WebviewController = new webview.WebviewController();
   active: boolean = false;
   manual: boolean = false;
+  verifying: boolean = false;
   progress: string = '加载统一身份认证页面';
   displayAccount: string = '';
   viewID: number = 0;
   onChange: () => void = (): void => {};
   private sequence: number = 0;
   private attached: boolean = false;
-  private pageLoaded: boolean = false;
   private currentURL: string = '';
   private navigationFailed: boolean = false;
   private rejectCancellation?: () => void;
@@ -25,16 +25,18 @@ export class WebAuthenticator implements AuthPort {
   onPageBegin(url: string): void {
     if (!this.active) { return; }
     this.currentURL = url;
-    this.pageLoaded = false;
+    this.navigationFailed = false;
   }
 
   onPageEnd(url: string): void {
     if (!this.active) { return; }
     this.currentURL = url;
-    this.pageLoaded = true;
   }
 
-  onNavigationError(): void { if (this.active) { this.navigationFailed = true; } }
+  onNavigationError(code?: number): void {
+    // ArkWeb reports a cancelled navigation during redirects; it is not a failed login.
+    if (this.active && code !== -3) { this.navigationFailed = true; }
+  }
 
   /** Return true to intercept (block) a main-frame navigation outside school HTTPS origins. */
   urlLoadIntercept(url: string): boolean {
@@ -46,6 +48,7 @@ export class WebAuthenticator implements AuthPort {
   showManual(): void {
     if (!this.active) { return; }
     this.manual = true;
+    this.verifying = false;
     this.progress = '请在网页中完成认证';
     this.onChange();
   }
@@ -66,12 +69,12 @@ export class WebAuthenticator implements AuthPort {
     const token = ++this.sequence;
     this.viewID = token;
     this.attached = false;
-    this.pageLoaded = false;
     this.currentURL = '';
     this.navigationFailed = false;
     this.controller = new webview.WebviewController();
     this.displayAccount = account.username;
     this.manual = forceManual;
+    this.verifying = false;
     this.progress = forceManual ? '请在网页中完成认证' : '加载统一身份认证页面';
     this.active = true;
     // UI mounts Web({incognitoMode:true}) in response to this notification.
@@ -114,17 +117,22 @@ export class WebAuthenticator implements AuthPort {
     let phaseStarted = Date.now();
     let wasManual = this.manual;
     let lastProfileAttempt = 0;
+    let handoffStarted = 0;
+    let formWaitStarted = 0;
     while (true) {
       this.check(token);
       if (this.navigationFailed) {
         throw new RollcallError('message', '登录页面加载失败，请检查网络后重试');
       }
       if (this.manual && !wasManual) { phaseStarted = Date.now(); wasManual = true; }
+      // onPageEnd is not a readiness signal for SPA routes or pages with slow resources.
+      // Always read ArkWeb's live URL rather than depending on the last navigation callback.
+      try { this.currentURL = this.controller.getUrl(); } catch (ignored) {}
       const host = WebAuthenticator.schoolHost(this.currentURL);
-      const path = this.currentURL.replace(/^https:\/\/[^/]+/i, '');
-      if (host === 'lnt.xmu.edu.cn' && !path.startsWith('/login') && this.pageLoaded &&
-        Date.now() - lastProfileAttempt > 1000) {
+      if (host === 'lnt.xmu.edu.cn' && Date.now() - lastProfileAttempt > 1000) {
         lastProfileAttempt = Date.now();
+        if (handoffStarted === 0 && (didSubmit || this.manual)) { handoffStarted = Date.now(); }
+        if (!this.verifying) { this.verifying = true; this.onChange(); }
         this.setProgress('确认登录账号');
         let cookie = '';
         try {
@@ -132,7 +140,10 @@ export class WebAuthenticator implements AuthPort {
           cookie = webview.WebCookieManager.fetchCookieSync(HarmonyTransport.BASE + '/api/profile', true);
         } catch (ignored) {}
         if (cookie.length > 0) {
-          const client = new TronclassClient(new HarmonyTransport(cookie));
+          if (handoffStarted === 0) { handoffStarted = Date.now(); }
+          let userAgent = '';
+          try { userAgent = this.controller.getUserAgent(); } catch (ignored) {}
+          const client = new TronclassClient(new HarmonyTransport(cookie, userAgent));
           try {
             const profile = await client.profile();
             this.check(token);
@@ -151,8 +162,15 @@ export class WebAuthenticator implements AuthPort {
             // The school may briefly serve an intermediate page before its SSO redirect completes.
           }
         }
+        if (handoffStarted > 0 && Date.now() - handoffStarted > 15000) {
+          throw new RollcallError('message', '未能确认学校登录状态，请重新进入课程');
+        }
+      } else if (host !== 'lnt.xmu.edu.cn') {
+        handoffStarted = 0;
+        if (this.verifying) { this.verifying = false; this.onChange(); }
       }
-      if (!this.manual && host === 'ids.xmu.edu.cn' && this.pageLoaded) {
+      if (!this.manual && host === 'ids.xmu.edu.cn') {
+        if (formWaitStarted === 0) { formWaitStarted = Date.now(); }
         const state = await this.evaluate(WebAuthenticator.OBSERVE_SCRIPT, token);
         this.check(token);
         if (state === 'manual') { this.showManual(); phaseStarted = Date.now(); }
@@ -174,10 +192,15 @@ export class WebAuthenticator implements AuthPort {
               if (submitted === 'submitted') { didSubmit = true; this.setProgress('等待认证结果'); }
             }
           }
-          phaseStarted = Date.now();
+          if (result === 'filled' || result === 'manual') { phaseStarted = Date.now(); }
         } else if (state === 'switch' && !didSubmit) {
           await this.evaluate(`(() => { if (location.protocol !== 'https:' || location.hostname !== 'ids.xmu.edu.cn') return 'waiting'; document.querySelector('a[href*="type=userNameLogin"]')?.click(); return 'waiting'; })()`, token);
           this.setProgress('切换到账号密码登录');
+        }
+        // Changed/unsupported forms must not leave the user behind a permanent spinner.
+        if (!didSubmit && !this.manual && state === 'waiting' && Date.now() - formWaitStarted > 10000) {
+          this.showManual();
+          phaseStarted = Date.now();
         }
       }
       const timeout = this.manual ? 180000 : 40000;
@@ -209,8 +232,12 @@ export class WebAuthenticator implements AuthPort {
     try {
       const encoded = await Promise.race([this.controller.runJavaScript(script), timeout]);
       this.check(token);
+      if (typeof encoded !== 'string' || encoded === 'null' || encoded.length === 0) { return 'waiting'; }
       // runJavaScript serializes string results as JSON on ArkWeb.
-      if (encoded.startsWith('"')) { return JSON.parse(encoded) as string; }
+      if (encoded.startsWith('"')) {
+        const value = JSON.parse(encoded) as string;
+        return typeof value === 'string' ? value : 'waiting';
+      }
       return encoded;
     } catch (error) {
       if (error instanceof RollcallError) { throw error; }
@@ -222,8 +249,8 @@ export class WebAuthenticator implements AuthPort {
     try { if (this.attached) { this.controller.stop(); } } catch (ignored) {}
     try { webview.WebCookieManager.clearAllCookiesSync(true); } catch (ignored) {}
     this.active = false;
+    this.verifying = false;
     this.attached = false;
-    this.pageLoaded = false;
     this.currentURL = '';
     this.onChange();
   }
@@ -235,10 +262,21 @@ export class WebAuthenticator implements AuthPort {
     return host === 'xmu.edu.cn' || host.endsWith('.xmu.edu.cn') ? host : '';
   }
 
+  private static readonly FORM_HELPERS: string = `
+    const visible = e => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden';
+    const passwordScope = () => [document.querySelector('#pwdLoginDiv'), document.querySelector('#pwdFromId')]
+      .find(e => visible(e) && visible(e.querySelector('#username')) && visible(e.querySelector('#password')));
+    const challengeVisible = scope => visible(scope && scope.querySelector('#captcha')) ||
+      (visible(document.querySelector('#sliderCaptchaDiv')) && document.querySelector('#sliderCaptchaDiv').children.length > 0) ||
+      visible(document.querySelector('#dynamicCode'));
+  `;
+
   private static readonly OBSERVE_SCRIPT: string = `(() => {
     if (location.protocol !== 'https:' || location.hostname !== 'ids.xmu.edu.cn') return 'waiting';
-    const visible = e => e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
-    const error = document.querySelector('#pwdFromId #showErrorTip');
+    if (document.readyState === 'loading') return 'waiting';
+    ${WebAuthenticator.FORM_HELPERS}
+    const scope = passwordScope();
+    const error = scope && (scope.querySelector('#showErrorTip') || scope.querySelector('#formErrorTip2'));
     const text = visible(error) ? error.textContent.trim() : '';
     if (text) {
       if (/网络|超时|服务异常|系统异常|network|timeout|unavailable/i.test(text)) return 'error';
@@ -246,10 +284,10 @@ export class WebAuthenticator implements AuthPort {
       if (/账号|帐号|用户|密码|认证失败|登录失败|不允许|非法|username|password|credential/i.test(text)) return 'invalid';
       return 'manual';
     }
-    if (visible(document.querySelector('#pwdFromId #captcha')) || document.querySelector('#sliderCaptchaDiv')?.children.length || visible(document.querySelector('#dynamicCode'))) return 'manual';
-    const warning = document.querySelector('#pwdFromId #showWarnTip');
+    if (challengeVisible(scope)) return 'manual';
+    const warning = scope && scope.querySelector('#showWarnTip');
     if (visible(warning) && warning.textContent.trim()) return 'manual';
-    if (visible(document.querySelector('#pwdFromId #username')) && visible(document.querySelector('#pwdFromId #password'))) return 'ready';
+    if (scope) return 'ready';
     if (visible(document.querySelector('a[href*="type=userNameLogin"]'))) return 'switch';
     return 'waiting';
   })()`;
@@ -259,25 +297,30 @@ export class WebAuthenticator implements AuthPort {
     const passwordLiteral = JSON.stringify(password);
     return `(() => {
       if (location.protocol !== 'https:' || location.hostname !== 'ids.xmu.edu.cn') return 'waiting';
+      if (document.readyState === 'loading') return 'waiting';
+      ${WebAuthenticator.FORM_HELPERS}
       const username = ${accountLiteral}; const password = ${passwordLiteral};
-      const u = document.querySelector('#pwdFromId #username');
-      const p = document.querySelector('#pwdFromId #password');
-      const button = document.querySelector('#pwdFromId #login_submit');
+      const scope = passwordScope();
+      if (!scope) return 'waiting';
+      const u = scope.querySelector('#username');
+      const p = scope.querySelector('#password');
+      const button = scope.querySelector('#login_submit');
       if (!u || !p || !button) return 'waiting';
       u.focus(); u.value = username; u.dispatchEvent(new Event('input', {bubbles:true})); u.dispatchEvent(new Event('change', {bubbles:true})); u.blur();
       p.focus(); p.value = password; p.dispatchEvent(new Event('input', {bubbles:true})); p.dispatchEvent(new Event('change', {bubbles:true})); p.blur();
       if (u.value !== username || p.value !== password || (p.maxLength > 0 && password.length > p.maxLength)) return 'truncated';
-      const cap = document.querySelector('#pwdFromId #captcha');
-      if ((cap && cap.getClientRects().length) || document.querySelector('#sliderCaptchaDiv')?.children.length) return 'manual';
+      if (challengeVisible(scope)) return 'manual';
       return 'filled';
     })()`;
   }
 
   private static readonly SUBMIT_SCRIPT: string = `(() => {
     if (location.protocol !== 'https:' || location.hostname !== 'ids.xmu.edu.cn') return 'waiting';
-    const cap = document.querySelector('#pwdFromId #captcha');
-    if ((cap && cap.getClientRects().length) || document.querySelector('#sliderCaptchaDiv')?.children.length) return 'manual';
-    const button = document.querySelector('#pwdFromId #login_submit');
+    if (document.readyState === 'loading') return 'waiting';
+    ${WebAuthenticator.FORM_HELPERS}
+    const scope = passwordScope();
+    if (challengeVisible(scope)) return 'manual';
+    const button = scope && scope.querySelector('#login_submit');
     if (!button) return 'waiting';
     button.click(); return 'submitted';
   })()`;
