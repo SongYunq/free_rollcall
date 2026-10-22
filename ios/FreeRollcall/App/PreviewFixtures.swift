@@ -63,14 +63,26 @@ private actor FixtureTransport: HTTPTransport {
                 fields["id"] = .string(id)
                 fields["course"] = .object(["id": .string(courseID), "name": .string("软件工程与实践")])
                 fields["status"] = .string(active ? "active" : "finished")
-                fields["student_rollcalls"] = .array([.object([
-                    "student_id": .string(studentID),
-                    "status": .string(answered.contains(id) || id == "703" ? "on_call" : "absent")
-                ])])
+                fields["student_rollcalls"] = .array(studentRollcalls(for: id))
                 return .object(fields)
             })])
         } else { throw RollcallError.message("演示数据未提供此操作") }
         return APIResponse(status: 200, data: try body.encoded())
+    }
+    private func studentRollcalls(for id: String) -> [JSONValue] {
+        let otherStatuses: [String]
+        switch id {
+        case "701": otherStatuses = ["on_call_fine", "on_call_late", "absent"]
+        case "703": otherStatuses = ["on_call", "on_call_fine", "on_call_late"]
+        default: otherStatuses = ["on_call", "absent", "absent"]
+        }
+        let own: JSONValue = .object([
+            "student_id": .string(studentID),
+            "status": .string(answered.contains(id) || id == "703" ? "on_call" : "absent")
+        ])
+        return [own] + otherStatuses.enumerated().map { index, status in
+            .object(["student_id": .string("9100\(index + 1)"), "status": .string(status)])
+        }
     }
     private func record(_ id: String, courseID: String, radar: Bool, active: Bool, includeCode: Bool = true) -> JSONValue {
         .object(["rollcall_id": .string(id), "course_id": .string(courseID), "is_number": .bool(!radar), "is_radar": .bool(radar),

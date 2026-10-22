@@ -38,6 +38,79 @@ final class RollcallCoreTests: XCTestCase {
         XCTAssertTrue(record.hasEnded); XCTAssertFalse(record.canSubmit)
         XCTAssertEqual(record.stateText, "已结束")
     }
+    private func counts(_ students: String) throws -> AttendanceCounts? {
+        AttendanceCounts(json: try json("{\"student_rollcalls\":\(students)}"))
+    }
+    func testAttendanceCountsIncludeOnlyKnownSignedStatusesAndLateAttendance() throws {
+        let statuses = ["on_call", "on_call_fine", "on_call_late", "present", "attended", "late",
+                        "absent", "leave", "unrecognized", "not_on_call", "on_call_failed"]
+        let students: [JSONValue] = statuses.enumerated().map {
+            .object(["student_id": .number(Double($0.offset)), "status": .string($0.element)])
+        }
+        let result = try XCTUnwrap(AttendanceCounts(json: .object(["student_rollcalls": .array(students)])))
+        XCTAssertEqual(result.signedIn, 6); XCTAssertEqual(result.total, 11)
+    }
+    func testAttendanceCountsDeduplicateStudentsAndDoNotGuessConflictingStatuses() throws {
+        let students = [
+            #"{"student_id":123,"id":1,"status":"on_call"}"#,
+            #"{"student_id":"123","id":2,"status":"on_call"}"#,
+            #"{"student_id":2,"status":"on_call"}"#, #"{"student_id":2,"status":"absent"}"#,
+            #"{"student_id":3,"status":"present"}"#, #"{"student_id":3,"status":"late"}"#
+        ]
+        for rows in [students, Array(students.reversed())] {
+            let result = try XCTUnwrap(counts("[\(rows.joined(separator: ","))]"))
+            XCTAssertEqual(result.signedIn, 1); XCTAssertEqual(result.total, 3)
+        }
+    }
+    func testAttendanceCountsFallBackToRecordIDsThenIndividualRows() throws {
+        let result = try XCTUnwrap(counts(#"""
+        [
+            {"id":12,"status":"absent"},{"id":"12","status":"absent"},
+            {"status":"on_call"},{"status":"on_call"},{"student_id":12,"status":"late"},
+            {"student_id":true,"id":77,"status":"present"},{"student_id":" ","id":"77","status":"present"}
+        ]
+        """#))
+        XCTAssertEqual(result.signedIn, 4); XCTAssertEqual(result.total, 5)
+    }
+    func testAttendanceCountsNormalizeStatusAndOnlyFallBackWhenPrimaryStatusIsMissingOrNull() throws {
+        let result = try XCTUnwrap(counts(#"""
+        [
+            {"student_id":1,"status":" ON_CALL "},{"student_id":2,"rollcall_status":"LaTe"},
+            {"student_id":3,"status":null,"rollcall_status":"present"},
+            {"student_id":4,"status":"","rollcall_status":"on_call"},
+            {"student_id":5,"status":123,"rollcall_status":"on_call"},
+            {"student_id":6,"status":true},{"student_id":7}
+        ]
+        """#))
+        XCTAssertEqual(result.signedIn, 3); XCTAssertEqual(result.total, 7)
+        let duplicate = try XCTUnwrap(counts(#"[{"student_id":1,"status":" ON_CALL "},{"student_id":"1","status":"on_call"}]"#))
+        XCTAssertEqual(duplicate.signedIn, 1); XCTAssertEqual(duplicate.total, 1)
+    }
+    func testAttendanceCountsDistinguishMissingOrMalformedRostersFromAnEmptyClass() throws {
+        for response in ["null", "[]", "{}", #"{"student_rollcalls":null}"#,
+                         #"{"student_rollcalls":{}}"#, #"{"student_rollcalls":"[]"}"#,
+                         #"{"student_rollcalls":[null]}"#, #"{"student_rollcalls":[1]}"#,
+                         #"{"student_rollcalls":[{},false]}"#] {
+            XCTAssertNil(AttendanceCounts(json: try json(response)), response)
+        }
+        let empty = try XCTUnwrap(counts("[]"))
+        XCTAssertEqual(empty.signedIn, 0); XCTAssertEqual(empty.total, 0)
+        let unknown = try XCTUnwrap(counts(#"[{"student_id":1},{"student_id":2,"status":"unknown"}]"#))
+        XCTAssertEqual(unknown.signedIn, 0); XCTAssertEqual(unknown.total, 2)
+    }
+    func testAttendanceMergeRetainsCountsWhenMissingAndAcceptsAnExplicitEmptyClass() throws {
+        var record = try Attendance(json: json(#"{"rollcall_id":1,"status":"on_call_late","student_rollcalls":[{"student_id":1,"status":"late"},{"student_id":2,"status":"absent"}]}"#))
+        let original = try XCTUnwrap(record.attendanceCounts)
+        XCTAssertEqual(original.signedIn, 1); XCTAssertEqual(original.total, 2)
+        record.merge(try Attendance(json: json(#"{"rollcall_id":1}"#)))
+        XCTAssertEqual(record.attendanceCounts, original)
+        record.merge(try Attendance(json: json(#"{"rollcall_id":2,"student_rollcalls":[]}"#)))
+        XCTAssertEqual(record.attendanceCounts, original)
+        record.merge(try Attendance(json: json(#"{"rollcall_id":1,"student_rollcalls":[]}"#)))
+        let empty = try XCTUnwrap(record.attendanceCounts)
+        XCTAssertEqual(empty.signedIn, 0); XCTAssertEqual(empty.total, 0)
+        XCTAssertEqual(record.personalStatus, "on_call_late")
+    }
     func testOnlyExplicitAbsenceAfterEndingGetsAbsentLabel() throws {
         var record = try Attendance(json: json(#"{"rollcall_id":1,"is_number":true,"rollcall_status":"finished"}"#))
         for status: String? in [nil, "", "unrecognized", "on_call_fine", "on_call_late", "present", "attended", "late"] {
@@ -203,6 +276,24 @@ final class RollcallCoreTests: XCTestCase {
             XCTAssertEqual(record.personalStatus, expected, students)
             XCTAssertEqual(record.isAnswered, expected == "on_call" || expected == "on_call_fine", students)
         }
+    }
+    func testTimetableClassCountsRemainIndependentOfTheCurrentStudentsStatus() async throws {
+        let response = timetableReply(#"[{"id":7,"status":"active","is_number":true,"student_rollcalls":[{"student_id":8,"status":"on_call"},{"student_id":9,"status":"absent"},{"student_id":10,"status":"on_call_late"}]}]"#)
+        for studentID in ["9", "99"] {
+            let transport = StubTransport([(200, response)])
+            let record = try await TronclassClient(transport: transport).detail(id: "7", courseID: "11", date: attendanceDate, studentID: studentID)
+            let counts = try XCTUnwrap(record.attendanceCounts)
+            XCTAssertEqual(counts.signedIn, 2); XCTAssertEqual(counts.total, 3)
+            XCTAssertEqual(record.personalStatus, studentID == "9" ? "absent" : nil)
+            XCTAssertFalse(record.isAnswered); XCTAssertTrue(record.canSubmit)
+        }
+    }
+    func testTimetableAggregateParsingPreservesExistingPersonalStatusFallback() async throws {
+        let transport = StubTransport([(200, timetableReply(#"[{"id":7,"status":"active","student_rollcalls":[{"student_id":9,"status":"","rollcall_status":"on_call"}]}]"#))])
+        let record = try await TronclassClient(transport: transport).detail(id: "7", courseID: "11", date: attendanceDate, studentID: "9")
+        XCTAssertEqual(record.personalStatus, "on_call"); XCTAssertTrue(record.isAnswered)
+        let counts = try XCTUnwrap(record.attendanceCounts)
+        XCTAssertEqual(counts.signedIn, 0); XCTAssertEqual(counts.total, 1)
     }
     func testDetailWithoutOwnStatusPreservesSignedHistoryWhenMerged() async throws {
         for status in ["on_call", "on_call_fine", "on_call_late"] {

@@ -41,6 +41,7 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
     @ObservationIgnored private var courseRequest = UUID()
     @ObservationIgnored private var historyRequest = UUID()
     @ObservationIgnored private var detailEpoch = UUID()
+    @ObservationIgnored private var countRequests: [String: UUID] = [:]
 
     init(store: LocalStore) { self.store = store }
     var currentAccount: SavedAccount? { currentAccountID.flatMap(store.account) }
@@ -56,6 +57,7 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
     }
     private func resetPages() {
         courseRequest = UUID(); historyRequest = UUID(); detailEpoch = UUID()
+        countRequests = [:]
         courses = []; historyPage = PageAccumulator()
         records = []; historyCourseID = nil; homePath = []
         coursesError = nil; historyError = nil; operationMessage = nil
@@ -163,6 +165,7 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
         let changedCourse = historyCourseID != course.id
         if changedCourse {
             historyPage = PageAccumulator(); records = []; detailEpoch = UUID()
+            countRequests = [:]
         }
         if reset || changedCourse { operationMessage = nil; detailEpoch = UUID() }
         historyCourseID = course.id
@@ -176,37 +179,53 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
             // Loading older pages must retain already fetched codes and freshly confirmed results.
             records = historyPage.items.map {
                 var record = reset ? $0 : visible[$0.id] ?? $0
+                if reset, let previous = visible[$0.id] {
+                    record.numberCode = record.numberCode ?? previous.numberCode
+                    record.attendanceCounts = record.attendanceCounts ?? previous.attendanceCounts
+                    if record.kind == .unknown { record.kind = previous.kind }
+                }
                 record.courseID = record.courseID ?? course.id
                 record.courseName = record.courseName ?? course.name
                 return record
             }
             // Active endpoint may include activities not yet visible in history. Only merge a proven course match.
+            var activeIDs: Set<String> = []
             do {
                 let active = try await read { try await $0.client.active() }
                 guard token == historyRequest else { return }
                 for item in active {
-                    if let index = records.firstIndex(where: { $0.id == item.id }) { records[index].merge(item) }
-                    else if item.courseID == course.id { records.append(item) }
+                    if let index = records.firstIndex(where: { $0.id == item.id }) {
+                        records[index].merge(item); activeIDs.insert(item.id)
+                    } else if item.courseID == course.id {
+                        records.append(item); activeIDs.insert(item.id)
+                    }
                 }
             } catch {
                 guard token == historyRequest else { return }
                 historyError = "历史记录已加载，当前活动刷新失败，可下拉重试"
             }
             records.sort { a, b in a.isActive != b.isActive ? a.isActive : (a.date ?? .distantPast) > (b.date ?? .distantPast) }
-            // History can omit numeric codes, including those of finished activities.
-            // Fetch codes without replacing the history endpoint's personal/activity status.
-            let missing = records.filter { ($0.kind == .number && $0.numberCode?.isEmpty != false) || $0.kind == .unknown }
-            var incomplete = false
+            // Counts are needed for every kind, even when the number code is already present.
+            // Refresh the fetched page while retaining cached details until new data arrives.
+            let refreshedIDs = Set(data.items.filter { $0.attendanceCounts == nil || Self.needsCode($0) }.map(\.id))
+            let missing = records.filter {
+                $0.attendanceCounts == nil || Self.needsCode($0) || refreshedIDs.contains($0.id) || activeIDs.contains($0.id)
+            }
+            var missingCodes = false
+            var missingCounts = false
             var calendar = Calendar(identifier: .gregorian)
             calendar.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
             var groups: [(date: Date, records: [Attendance])] = []
             for record in missing {
-                guard let date = record.date else { incomplete = true; continue }
+                guard let date = record.date else {
+                    missingCodes = missingCodes || Self.needsCode(record); missingCounts = true
+                    continue
+                }
                 let day = calendar.startOfDay(for: date)
                 if let index = groups.firstIndex(where: { $0.date == day }) { groups[index].records.append(record) }
                 else { groups.append((day, [record])) }
             }
-            // One course/date request provides all codes for that day, without replacing history status.
+            // One course/date request provides codes and aggregate counts without replacing history status.
             for group in groups {
                 guard token == historyRequest, !Task.isCancelled else { return }
                 do {
@@ -217,22 +236,30 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
                     for record in group.records {
                         guard let detail = details.first(where: { $0.id == record.id }),
                               let index = records.firstIndex(where: { $0.id == record.id }) else {
-                            incomplete = true; continue
+                            missingCodes = missingCodes || Self.needsCode(record); missingCounts = true
+                            continue
                         }
                         records[index].numberCode = detail.numberCode ?? records[index].numberCode
+                        records[index].attendanceCounts = detail.attendanceCounts ?? records[index].attendanceCounts
                         if records[index].kind == .unknown { records[index].kind = detail.kind }
-                        if records[index].kind == .number && records[index].numberCode?.isEmpty != false { incomplete = true }
+                        missingCodes = missingCodes || Self.needsCode(records[index])
+                        missingCounts = missingCounts || detail.attendanceCounts == nil
                     }
                 } catch {
                     guard token == historyRequest, !Task.isCancelled, error as? RollcallError != .cancelled else { return }
-                    incomplete = true
+                    missingCodes = missingCodes || group.records.contains(where: Self.needsCode)
+                    missingCounts = true
                 }
             }
-            if incomplete {
-                let message = "部分签到码未获取，可下拉刷新重试"
+            if missingCodes || missingCounts {
+                let fields = [missingCodes ? "签到码" : nil, missingCounts ? "人数" : nil].compactMap { $0 }.joined(separator: "和")
+                let message = "部分\(fields)未获取，可下拉刷新重试"
                 historyError = historyError.map { "\($0)；\(message)" } ?? message
             }
         } catch { if token == historyRequest { historyError = error.localizedDescription } }
+    }
+    private static func needsCode(_ record: Attendance) -> Bool {
+        record.kind == .unknown || (record.kind == .number && record.numberCode?.isEmpty != false)
     }
     private func queryDate(id: String, courseID: String, knownDate: Date?, current: AuthenticatedSession) async throws -> Date {
         if let knownDate { return knownDate }
@@ -257,6 +284,8 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
     }
     func detail(_ record: Attendance, courseID: String? = nil, allowAuthentication: Bool = true) async throws -> Attendance {
         guard !isSubmitting, !preparingSubmission else { throw RollcallError.cancelled }
+        // A newer explicit detail read takes precedence over an optional post-submission count read.
+        countRequests[record.id] = UUID()
         let epoch = detailEpoch
         let courseID = courseID ?? historyCourseID
         let detail: Attendance
@@ -316,15 +345,20 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
                 guard let code = fresh.numberCode, !code.isEmpty else { throw RollcallError.message("未能取得数字签到码") }
                 let result = try await current.client.submitNumber(id: fresh.id, code: code, courseID: course.id, date: activityDate, studentID: current.profile.id)
                 fresh.merge(result)
+                fresh.attendanceCounts = result.attendanceCounts
             case .radar:
                 guard try await current.client.submitRadar(id: fresh.id) else { throw RollcallError.message("雷达签到未完成，请稍后重试") }
                 fresh.personalStatus = "on_call_fine"
+                fresh.attendanceCounts = nil
             default: throw RollcallError.message("暂不支持此签到形式")
             }
             accepted = true
             if let i = records.firstIndex(where: { $0.id == fresh.id }) { records[i] = fresh }
             try store.update(log, result: .success, message: "签到成功", code: fresh.numberCode, kind: fresh.kind)
             operationMessage = "签到成功"
+            if fresh.kind == .radar {
+                refreshCountsAfterRadar(fresh, courseID: course.id, date: activityDate, current: current)
+            }
         } catch {
             let result: LogResult
             if accepted { result = .uncertain }
@@ -332,6 +366,19 @@ struct AccountEditorRoute: Identifiable { let id = UUID(); let accountID: UUID? 
             if error as? RollcallError == .expiredSession { session = nil }
             do { try store.update(log, result: result, message: error.localizedDescription) } catch { report(error) }
             operationMessage = error.localizedDescription
+        }
+    }
+    private func refreshCountsAfterRadar(_ record: Attendance, courseID: String, date: Date, current: AuthenticatedSession) {
+        let token = historyRequest
+        let countToken = UUID(); countRequests[record.id] = countToken
+        Task { [weak self] in
+            // This optional read must neither hold the submission lock nor change its successful log.
+            guard let detail = try? await current.client.detail(id: record.id, courseID: courseID, date: date, studentID: current.profile.id),
+                  let self, self.historyRequest == token, self.session?.generation == current.generation,
+                  self.countRequests[record.id] == countToken,
+                  self.historyCourseID == courseID,
+                  let index = self.records.firstIndex(where: { $0.id == record.id }) else { return }
+            self.records[index].attendanceCounts = detail.attendanceCounts
         }
     }
     func reconcile(_ log: AttendanceLog) async throws {

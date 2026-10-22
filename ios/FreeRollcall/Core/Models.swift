@@ -38,6 +38,48 @@ public enum AttendanceKind: String, Codable, Sendable {
     }
 }
 
+public struct AttendanceCounts: Hashable, Sendable {
+    public let signedIn: Int
+    public let total: Int
+
+    private enum StudentIdentity: Hashable {
+        case student(String), record(String), row(Int)
+    }
+    private static let signedInStatuses: Set<String> = ["on_call", "on_call_fine", "on_call_late", "present", "attended", "late"]
+
+    public init?(json: JSONValue) {
+        guard let students = json["student_rollcalls"].array,
+              students.allSatisfy({ $0.object != nil }) else { return nil }
+        var statuses: [StudentIdentity: Set<String>] = [:]
+        for (index, student) in students.enumerated() {
+            let identity: StudentIdentity
+            if let id = student["student_id"].string, !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                identity = .student(id)
+            } else if let id = student["id"].string, !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                identity = .record(id)
+            } else {
+                identity = .row(index)
+            }
+            // An explicit but invalid primary status must not fall back to a signed status.
+            let value = student["status"] == .null ? student["rollcall_status"] : student["status"]
+            let status: String
+            if case .string(let text) = value {
+                let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                status = normalized.isEmpty ? "unknown" : normalized
+            } else {
+                status = "unknown"
+            }
+            statuses[identity, default: []].insert(status)
+        }
+        // Conflicting duplicate rows count toward the class total without proving attendance.
+        signedIn = statuses.values.filter {
+            guard $0.count == 1, let status = $0.first else { return false }
+            return Self.signedInStatuses.contains(status)
+        }.count
+        total = statuses.count
+    }
+}
+
 public struct Attendance: Identifiable, Hashable, Sendable {
     public let id: String
     public var courseID: String?
@@ -50,6 +92,7 @@ public struct Attendance: Identifiable, Hashable, Sendable {
     public var isExpired: Bool?
     public var numberCode: String?
     public var endDate: Date?
+    public var attendanceCounts: AttendanceCounts?
 
     public init(json: JSONValue) throws {
         guard let id = json["rollcall_id"].string ?? json["id"].string else { throw RollcallError.malformedResponse }
@@ -65,6 +108,7 @@ public struct Attendance: Identifiable, Hashable, Sendable {
         self.isExpired = json["is_expired"].bool
         self.numberCode = json["number_code"].string
         self.endDate = Self.parseDate(json["end_time"].string)
+        self.attendanceCounts = AttendanceCounts(json: json)
     }
     public static let activityStatuses: Set<String> = ["active", "finished", "ended", "closed"]
     private static let answeredStatuses: Set<String> = ["on_call", "on_call_fine", "on_call_late", "present", "attended", "late"]
@@ -110,6 +154,7 @@ public struct Attendance: Identifiable, Hashable, Sendable {
         }
         isExpired = other.isExpired ?? isExpired
         numberCode = other.numberCode ?? numberCode; endDate = other.endDate ?? endDate
+        attendanceCounts = other.attendanceCounts ?? attendanceCounts
     }
     public static func kind(_ json: JSONValue) -> AttendanceKind {
         if json["is_radar"].bool == true { return .radar }

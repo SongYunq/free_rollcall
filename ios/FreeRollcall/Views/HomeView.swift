@@ -62,6 +62,7 @@ struct HistoryView: View {
     @Bindable var state: AppState
     let course: Course
     @State private var selected: Attendance?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var body: some View {
         List {
             VStack(alignment: .leading, spacing: 8) {
@@ -79,11 +80,17 @@ struct HistoryView: View {
                         Image(systemName: record.kind == .radar ? "dot.radiowaves.left.and.right" : "number.square")
                             .font(.title3).frame(width: 28, height: 24)
                         VStack(alignment: .leading, spacing: 8) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(record.kind.title).fontWeight(.medium)
-                                Spacer(minLength: 8)
-                                Text(record.stateText).font(.caption)
-                                    .foregroundStyle(record.isAbsent ? Color.red : Color.secondary)
+                            if dynamicTypeSize.isAccessibilitySize {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(record.kind.title).fontWeight(.medium)
+                                    statusText(record)
+                                }
+                            } else {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(record.kind.title).fontWeight(.medium)
+                                    Spacer(minLength: 8)
+                                    statusText(record)
+                                }
                             }
                             Text(record.date.map(DisplayDate.string) ?? record.rawDate ?? "时间未提供")
                                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -97,7 +104,9 @@ struct HistoryView: View {
                                     .font(.caption.weight(.medium))
                             }
                         }
-                        if state.operationRecordID == record.id { ProgressView() }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        AttendanceCountsColumn(record: record, isSubmitting: state.operationRecordID == record.id)
                     }.padding(.vertical, 14).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).disabled(state.busy)
@@ -117,6 +126,36 @@ struct HistoryView: View {
         .refreshable { await state.loadHistory(course: course, reset: true) }
         .sheet(item: $selected) { record in AttendanceDetail(state: state, course: course, initial: record) }
     }
+    private func statusText(_ record: Attendance) -> some View {
+        Text(record.stateText).font(.caption)
+            .foregroundStyle(record.isAbsent ? Color.red : Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private extension Attendance {
+    var attendanceCountsText: String {
+        attendanceCounts.map { "\($0.signedIn)/\($0.total)" } ?? "—/—"
+    }
+}
+
+private struct AttendanceCountsColumn: View {
+    let record: Attendance
+    let isSubmitting: Bool
+    @ScaledMetric(relativeTo: .subheadline) private var columnWidth = 88
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            Text(record.attendanceCountsText)
+                .font(.subheadline.monospacedDigit().weight(.semibold))
+                .lineLimit(1).minimumScaleFactor(0.6)
+                .accessibilityIdentifier("attendance-counts-\(record.id)")
+            Text("已签到/总人数").font(.caption2).foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
+            if isSubmitting { ProgressView().accessibilityLabel("正在提交签到") }
+        }
+        .frame(width: min(columnWidth, 120), alignment: .trailing)
+        .layoutPriority(1)
+    }
 }
 
 private struct AttendanceDetail: View {
@@ -134,6 +173,9 @@ private struct AttendanceDetail: View {
                 FieldLine(title: "时间", value: record.date.map(DisplayDate.string) ?? record.rawDate ?? "未提供")
                 FieldLine(title: "形式", value: record.kind.title)
                 FieldLine(title: "状态", value: record.stateText)
+                FieldLine(title: "签到人数", value: record.attendanceCountsText)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("attendance-detail-counts")
                 if record.kind == .number { FieldLine(title: "签到码", value: record.numberCode ?? "未获取") }
                 if record.kind == .radar { FieldLine(title: "签到码", value: "雷达签到") }
                 if let error { MessageRow(text: error) }
